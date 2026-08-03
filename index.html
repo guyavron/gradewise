@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GradeWise — מחשבון ממוצע אקדמי</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['Heebo', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+          mono: ['JetBrains Mono', 'Consolas', 'Courier New', 'monospace']
+        },
+        colors: {
+          ink: '#0d1420',
+          panel: '#161f30',
+          panel2: '#111a2c',
+          line: '#253150',
+          ink2: '#e8ecf5',
+          muted: '#7c8bab',
+          accent: '#4ee3c2',
+          accentBg: '#0f2b26'
+        }
+      }
+    }
+  }
+</script>
+<style>
+  html { scroll-behavior: smooth; }
+  body { font-family: 'Heebo', ui-sans-serif, system-ui, sans-serif; }
+  input[type=checkbox] { accent-color: #4ee3c2; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #253150; border-radius: 9999px; }
+  ::-webkit-scrollbar-thumb:hover { background: #35426a; }
+  .fade-in { animation: fadeIn .18s ease-out; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+  input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+  input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  .chip-active { background-color: #4ee3c2 !important; color: #07231d !important; border-color: #4ee3c2 !important; }
+</style>
+</head>
+<body class="bg-ink text-ink2 min-h-screen">
+
+<div id="toast-root" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 items-center pointer-events-none"></div>
+
+<div class="max-w-6xl mx-auto px-4 sm:px-6 py-6 pb-24">
+
+  <!-- Header -->
+  <header class="flex items-center justify-between gap-3 mb-6">
+    <div class="flex items-center gap-3">
+      <div class="w-11 h-11 rounded-2xl bg-accent text-[#07231d] flex items-center justify-center text-sm font-mono font-bold">GW</div>
+      <div>
+        <h1 class="text-xl sm:text-2xl font-extrabold leading-tight">
+          <span class="text-accent">Grade</span><span class="text-ink2">Wise</span>
+        </h1>
+        <p class="text-xs sm:text-sm text-muted">ניהול ציונים, קורסים וממוצעים לאורך התואר</p>
+      </div>
+    </div>
+    <button data-action="reset-all" class="text-xs sm:text-sm font-medium text-muted hover:text-red-400 border border-line hover:border-red-800 hover:bg-red-950/30 rounded-xl px-3 py-2 transition-colors">
+      אפס הכל
+    </button>
+  </header>
+
+  <!-- Dashboard -->
+  <section id="dashboard" class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6"></section>
+
+  <!-- Binary recommendation -->
+  <section id="recommendation" class="mb-6"></section>
+
+  <!-- Filter bar -->
+  <section id="filter-bar" class="mb-6"></section>
+
+  <!-- Course tree -->
+  <main id="years-root" class="space-y-6"></main>
+
+  <!-- Add year button -->
+  <div class="mt-6">
+    <button data-action="add-year" class="w-full border-2 border-dashed border-line hover:border-accent/50 hover:bg-accentBg/40 text-muted hover:text-accent rounded-2xl py-4 font-semibold transition-colors flex items-center justify-center gap-2">
+      <span class="text-lg leading-none">+</span> הוספת שנת לימודים
+    </button>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ============================================================
+     STATE
+  ============================================================ */
+  const HEBREW_ORDINALS = ["א","ב","ג","ד","ה","ו","ז","ח","ט","י","יא","יב","יג","יד","טו"];
+
+  const state = {
+    years: [],
+    filter: { mode: "all", yearId: null, semesterId: null } // mode: all | year | semester
+  };
+
+  function uid() {
+    return "id-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  }
+
+  function ordinalYearName(index) {
+    const letter = HEBREW_ORDINALS[index] || (index + 1);
+    return "שנה " + letter + (HEBREW_ORDINALS[index] ? "׳" : "");
+  }
+
+  function nextSemesterName(count) {
+    if (count === 0) return "סמסטר א׳";
+    if (count === 1) return "סמסטר ב׳";
+    if (count === 2) return "סמסטר קיץ";
+    return "סמסטר נוסף " + (count - 1);
+  }
+
+  /* ============================================================
+     LOOKUPS
+  ============================================================ */
+  function findYear(yearId) {
+    return state.years.find(y => y.id === yearId) || null;
+  }
+
+  function locateSemester(semesterId) {
+    for (const year of state.years) {
+      const semester = year.semesters.find(s => s.id === semesterId);
+      if (semester) return { year, semester };
+    }
+    return { year: null, semester: null };
+  }
+
+  function locateCourse(courseId) {
+    for (const year of state.years) {
+      for (const semester of year.semesters) {
+        const course = semester.courses.find(c => c.id === courseId);
+        if (course) return { year, semester, course };
+      }
+    }
+    return { year: null, semester: null, course: null };
+  }
+
+  function allCourses() {
+    const list = [];
+    state.years.forEach(y => y.semesters.forEach(s => list.push(...s.courses)));
+    return list;
+  }
+
+  /* ============================================================
+     MUTATIONS
+  ============================================================ */
+  function addYear() {
+    state.years.push({ id: uid(), name: ordinalYearName(state.years.length), semesters: [] });
+    render();
+  }
+
+  function deleteYear(yearId) {
+    if (!confirm("למחוק את השנה כולה, כולל כל הסמסטרים והקורסים שבתוכה?")) return;
+    state.years = state.years.filter(y => y.id !== yearId);
+    if (state.filter.yearId === yearId) resetFilter();
+    render();
+  }
+
+  function addSemester(yearId) {
+    const year = findYear(yearId);
+    if (!year) return;
+    year.semesters.push({ id: uid(), name: nextSemesterName(year.semesters.length), courses: [] });
+    render();
+  }
+
+  function deleteSemester(semesterId) {
+    if (!confirm("למחוק את הסמסטר וכל הקורסים שבתוכו?")) return;
+    const { year } = locateSemester(semesterId);
+    if (!year) return;
+    year.semesters = year.semesters.filter(s => s.id !== semesterId);
+    if (state.filter.semesterId === semesterId) resetFilter();
+    render();
+  }
+
+  function addCourse(semesterId) {
+    const { semester } = locateSemester(semesterId);
+    if (!semester) return;
+    semester.courses.push({
+      id: uid(),
+      name: "קורס חדש",
+      credits: 3,
+      isBinary: false,
+      bonusPoints: 0,
+      expanded: true,
+      components: [
+        { id: uid(), type: "exam", name: "מבחן סופי", weight: 100, grade: "", isMagen: false }
+      ]
+    });
+    render();
+  }
+
+  function deleteCourse(courseId) {
+    if (!confirm("למחוק את הקורס?")) return;
+    const { semester } = locateCourse(courseId);
+    if (!semester) return;
+    semester.courses = semester.courses.filter(c => c.id !== courseId);
+    render();
+  }
+
+  function toggleCourseExpanded(courseId) {
+    const { course } = locateCourse(courseId);
+    if (!course) return;
+    course.expanded = !course.expanded;
+    render();
+  }
+
+  function addComponent(courseId, type) {
+    const { course } = locateCourse(courseId);
+    if (!course) return;
+    course.components.push({
+      id: uid(),
+      type,
+      name: type === "quiz" ? "בוחן" : "עבודה",
+      weight: 0,
+      grade: "",
+      isMagen: false
+    });
+    render();
+  }
+
+  function deleteComponent(courseId, componentId) {
+    const { course } = locateCourse(courseId);
+    if (!course) return;
+    course.components = course.components.filter(c => c.id !== componentId);
+    render();
+  }
+
+  function resetFilter() {
+    state.filter = { mode: "all", yearId: null, semesterId: null };
+  }
+
+  function resetAll() {
+    if (!confirm("לאפס את כל הנתונים? הפעולה אינה הפיכה.")) return;
+    state.years = [];
+    resetFilter();
+    render();
+    showToast("כל הנתונים אופסו");
+  }
+
+  function applyRecommendation(courseId) {
+    const { course } = locateCourse(courseId);
+    if (!course) return;
+    course.isBinary = true;
+    render();
+    showToast(`"${course.name}" סומן כעובר בינארי`);
+  }
+
+  /* ============================================================
+     CALCULATIONS
+  ============================================================ */
+  function num(v) {
+    const n = Number(v);
+    return isFinite(n) ? n : 0;
+  }
+
+  function weightSum(components) {
+    return components.reduce((s, c) => s + num(c.weight), 0);
+  }
+
+  // Returns { grade, valid, status, reason, totalWeight, droppedIds }
+  function computeCourseGrade(course) {
+    if (course.isBinary) {
+      return { grade: null, valid: true, status: "binary" };
+    }
+    const comps = course.components || [];
+    if (comps.length === 0) {
+      return { grade: null, valid: false, status: "invalid", reason: "no-components" };
+    }
+    const totalWeight = weightSum(comps);
+    if (Math.abs(totalWeight - 100) > 0.01) {
+      return { grade: null, valid: false, status: "invalid", reason: "weight-mismatch", totalWeight };
+    }
+    const hasUngraded = comps.some(c => num(c.weight) > 0 && (c.grade === "" || c.grade === null || c.grade === undefined));
+    if (hasUngraded) {
+      return { grade: null, valid: true, status: "ungraded", totalWeight };
+    }
+
+    // anchor = the final exam (type "exam" is never Magen-eligible) with the highest
+    // weight — this is the grade that quizzes/assignments marked as Magen protect against
+    const exams = comps.filter(c => c.type === "exam");
+    const anchor = exams.length
+      ? exams.reduce((a, b) => (num(b.weight) > num(a.weight) ? b : a))
+      : null;
+
+    const droppedIds = [];
+    let active = comps.filter(c => {
+      if (anchor && (c.type === "quiz" || c.type === "assignment") && c.isMagen) {
+        const magenGrade = num(c.grade);
+        const anchorGrade = num(anchor.grade);
+        if (magenGrade > anchorGrade) return true;
+        droppedIds.push(c.id);
+        return false;
+      }
+      return true;
+    });
+
+    const droppedWeight = comps
+      .filter(c => droppedIds.includes(c.id))
+      .reduce((s, c) => s + num(c.weight), 0);
+    const remainingWeight = active.reduce((s, c) => s + num(c.weight), 0);
+
+    const withEffective = active.map(c => {
+      let effectiveWeight = num(c.weight);
+      if (droppedWeight > 0 && remainingWeight > 0) {
+        effectiveWeight += droppedWeight * (num(c.weight) / remainingWeight);
+      }
+      return { ...c, effectiveWeight };
+    });
+
+    const weightedSum = withEffective.reduce(
+      (s, c) => s + (c.effectiveWeight / 100) * num(c.grade), 0
+    );
+    const rawGrade = weightedSum + num(course.bonusPoints);
+    const grade = Math.min(100, Math.max(0, rawGrade));
+
+    return { grade, valid: true, status: "numeric", totalWeight, droppedIds, rawGrade };
+  }
+
+  // Weighted average by credits over a flat course list
+  function computeStats(courseList) {
+    let weightedSum = 0, gpaCredits = 0, totalCredits = 0, excludedBinaryCredits = 0, invalidCount = 0;
+    courseList.forEach(course => {
+      const credits = num(course.credits);
+      totalCredits += credits;
+      const result = computeCourseGrade(course);
+      if (course.isBinary) {
+        excludedBinaryCredits += credits;
+      } else if (result.valid && result.grade !== null) {
+        weightedSum += result.grade * credits;
+        gpaCredits += credits;
+      } else if (!result.valid) {
+        invalidCount++;
+      }
+    });
+    return {
+      gpa: gpaCredits > 0 ? weightedSum / gpaCredits : null,
+      weightedSum,
+      totalCredits,
+      gpaCredits,
+      excludedBinaryCredits,
+      invalidCount,
+      courseCount: courseList.length
+    };
+  }
+
+  function semesterStats(semester) { return computeStats(semester ? semester.courses : []); }
+  function yearStats(year) { return computeStats(year ? year.semesters.flatMap(s => s.courses) : []); }
+  function cumulativeStats() { return computeStats(allCourses()); }
+
+  // Simulates marking each eligible numeric course as binary (pass/fail) one at a
+  // time, and returns the single swap that would raise the cumulative GPA the most
+  // — i.e. the course dragging the overall average down hardest relative to its
+  // credit weight. Returns null if no course, or no swap, would help.
+  function recommendBinarySwap() {
+    const cumulative = cumulativeStats();
+    if (cumulative.gpa === null) return null;
+    let best = null;
+    allCourses().forEach(course => {
+      if (course.isBinary) return;
+      const result = computeCourseGrade(course);
+      if (!result.valid || result.grade === null) return;
+      const credits = num(course.credits);
+      if (credits <= 0) return;
+      const newGpaCredits = cumulative.gpaCredits - credits;
+      if (newGpaCredits <= 0) return;
+      const newGpa = (cumulative.weightedSum - result.grade * credits) / newGpaCredits;
+      const delta = newGpa - cumulative.gpa;
+      if (delta > 0.005 && (!best || delta > best.delta)) {
+        best = { course, delta, newGpa, currentGpa: cumulative.gpa };
+      }
+    });
+    return best;
+  }
+
+  /* ============================================================
+     RENDER HELPERS
+  ============================================================ */
+  function esc(str) {
+    return String(str == null ? "" : str)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  function fmt(n, digits) {
+    if (n === null || n === undefined || !isFinite(n)) return "—";
+    return n.toFixed(digits === undefined ? 2 : digits);
+  }
+
+  function gradeColorClasses(grade) {
+    if (grade === null || grade === undefined) return "bg-panel2 text-muted border-line";
+    if (grade >= 90) return "bg-accentBg text-accent border-accent/30";
+    if (grade >= 80) return "bg-blue-950 text-blue-300 border-blue-800/50";
+    if (grade >= 70) return "bg-amber-950 text-amber-300 border-amber-800/50";
+    if (grade >= 60) return "bg-orange-950 text-orange-300 border-orange-800/50";
+    return "bg-red-950 text-red-300 border-red-800/50";
+  }
+
+  function courseGradeBadgeHTML(course) {
+    const result = computeCourseGrade(course);
+    if (course.isBinary) {
+      return `<span class="px-2.5 py-1 rounded-lg text-xs font-bold border bg-purple-950 text-purple-300 border-purple-800/50 whitespace-nowrap">בינארי · עובר</span>`;
+    }
+    if (!result.valid) {
+      if (result.reason === "weight-mismatch") {
+        return `<span class="px-2.5 py-1 rounded-lg text-xs font-mono font-bold border bg-amber-950 text-amber-300 border-amber-800/50 whitespace-nowrap" title="סה&quot;כ המשקלים חייב להיות 100%">משקלים ${fmt(result.totalWeight, 0)}%</span>`;
+      }
+      return `<span class="px-2.5 py-1 rounded-lg text-xs font-bold border bg-panel2 text-muted border-line whitespace-nowrap">אין רכיבים</span>`;
+    }
+    return `<span class="px-2.5 py-1 rounded-lg text-xs font-mono font-bold border ${gradeColorClasses(result.grade)} whitespace-nowrap">${fmt(result.grade, 1)}</span>`;
+  }
+
+  /* ---------- Dashboard ---------- */
+  function renderDashboard() {
+    const cumulative = cumulativeStats();
+    let semesterCard = { label: "ממוצע סמסטריאלי", sub: "בחרו סמסטר בסינון", stats: null };
+    let yearCard = { label: "ממוצע שנתי", sub: "בחרו שנה בסינון", stats: null };
+
+    if (state.filter.mode === "semester") {
+      const { year, semester } = locateSemester(state.filter.semesterId);
+      if (semester) {
+        semesterCard = { label: "ממוצע סמסטריאלי", sub: semester.name, stats: semesterStats(semester) };
+        yearCard = { label: "ממוצע שנתי", sub: year.name, stats: yearStats(year) };
+      }
+    } else if (state.filter.mode === "year") {
+      const year = findYear(state.filter.yearId);
+      if (year) yearCard = { label: "ממוצע שנתי", sub: year.name, stats: yearStats(year) };
+    }
+
+    const cards = [
+      statCardHTML(semesterCard.label, semesterCard.sub, semesterCard.stats),
+      statCardHTML(yearCard.label, yearCard.sub, yearCard.stats),
+      statCardHTML("ממוצע מצטבר כללי", "כל התואר", cumulative),
+      creditsCardHTML(cumulative)
+    ];
+    document.getElementById("dashboard").innerHTML = cards.join("");
+  }
+
+  function statCardHTML(label, sub, stats) {
+    const value = stats && stats.gpa !== null ? fmt(stats.gpa, 2) : "—";
+    const note = stats && stats.excludedBinaryCredits > 0
+      ? `<p class="text-[11px] text-muted mt-1">${fmt(stats.excludedBinaryCredits, 0)} נק&quot;ז בינאריות לא נכללות</p>`
+      : "";
+    return `
+      <div class="bg-panel border border-line rounded-xl p-4 sm:p-5">
+        <p class="text-xs sm:text-sm font-semibold text-muted">${esc(label)}</p>
+        <p class="text-[11px] text-muted/70 mb-1 truncate">${esc(sub)}</p>
+        <p class="text-2xl sm:text-3xl font-bold font-mono text-accent">${value}</p>
+        ${note}
+      </div>`;
+  }
+
+  function creditsCardHTML(cumulative) {
+    return `
+      <div class="bg-panel border border-line rounded-xl p-4 sm:p-5">
+        <p class="text-xs sm:text-sm font-semibold text-muted">סך נק&quot;ז שנצברו</p>
+        <p class="text-[11px] text-muted/70 mb-1">כל התואר</p>
+        <p class="text-2xl sm:text-3xl font-bold font-mono text-ink2">${fmt(cumulative.totalCredits, 0)}</p>
+        ${cumulative.invalidCount > 0 ? `<p class="text-[11px] text-red-400 mt-1">${cumulative.invalidCount} קורסים עם משקלים לא תקינים</p>` : ""}
+      </div>`;
+  }
+
+  /* ---------- Binary recommendation ---------- */
+  function renderRecommendation() {
+    const el = document.getElementById("recommendation");
+    const best = recommendBinarySwap();
+    if (!best) {
+      el.innerHTML = "";
+      return;
+    }
+    const { course, currentGpa, newGpa, delta } = best;
+    const { year, semester } = locateCourse(course.id);
+    const where = year && semester ? `${esc(semester.name)} · ${esc(year.name)}` : "";
+    el.innerHTML = `
+      <div class="flex flex-wrap items-center justify-between gap-3 bg-accentBg border border-accent/30 rounded-xl px-4 py-3">
+        <p class="text-sm text-ink2">
+          <span class="text-accent font-semibold">טיפ:</span>
+          סימון הקורס <span class="font-semibold">"${esc(course.name)}"</span>${where ? ` (${where})` : ""} כעובר בינארי צפוי להעלות את הממוצע המצטבר
+          מ-<span class="font-mono text-accent">${fmt(currentGpa, 2)}</span>
+          ל-<span class="font-mono text-accent">${fmt(newGpa, 2)}</span>
+          <span class="font-mono text-accent">(+${fmt(delta, 2)})</span>
+        </p>
+        <button data-action="apply-recommendation" data-course-id="${course.id}" class="shrink-0 text-xs font-semibold bg-accent text-[#07231d] rounded-lg px-3 py-1.5 hover:opacity-90 transition-opacity">
+          סמן כעובר בינארי
+        </button>
+      </div>`;
+  }
+
+  /* ---------- Filter bar ---------- */
+  function renderFilterBar() {
+    const allActive = state.filter.mode === "all";
+    let html = `<div class="flex flex-wrap items-center gap-2">
+      <button data-action="filter-all" class="chip ${allActive ? "chip-active" : ""} px-4 py-1.5 rounded-full text-sm font-semibold border border-line bg-panel text-muted hover:border-accent/50 transition-colors">
+        כל התואר
+      </button>`;
+
+    state.years.forEach(year => {
+      const active = state.filter.mode !== "all" && state.filter.yearId === year.id;
+      html += `<button data-action="filter-year" data-year-id="${year.id}" class="chip ${active ? "chip-active" : ""} px-4 py-1.5 rounded-full text-sm font-semibold border border-line bg-panel text-muted hover:border-accent/50 transition-colors">
+        ${esc(year.name)}
+      </button>`;
+    });
+    html += `</div>`;
+
+    if (state.filter.mode !== "all" && state.filter.yearId) {
+      const year = findYear(state.filter.yearId);
+      if (year && year.semesters.length) {
+        html += `<div class="flex flex-wrap items-center gap-2 mt-2">
+          <span class="text-xs text-muted font-medium">סמסטרים:</span>`;
+        year.semesters.forEach(sem => {
+          const active = state.filter.mode === "semester" && state.filter.semesterId === sem.id;
+          html += `<button data-action="filter-semester" data-year-id="${year.id}" data-semester-id="${sem.id}" class="chip ${active ? "chip-active" : ""} px-3 py-1 rounded-full text-xs font-semibold border border-line bg-panel text-muted hover:border-accent/50 transition-colors">
+            ${esc(sem.name)}
+          </button>`;
+        });
+        html += `</div>`;
+      }
+    }
+
+    document.getElementById("filter-bar").innerHTML = html;
+  }
+
+  /* ---------- Course tree ---------- */
+  function visibleYears() {
+    if (state.filter.mode === "all") return state.years;
+    if (state.filter.mode === "year" || state.filter.mode === "semester") {
+      const y = findYear(state.filter.yearId);
+      return y ? [y] : [];
+    }
+    return state.years;
+  }
+
+  function visibleSemesters(year) {
+    if (state.filter.mode === "semester") {
+      return year.semesters.filter(s => s.id === state.filter.semesterId);
+    }
+    return year.semesters;
+  }
+
+  function renderYearsRoot() {
+    const years = visibleYears();
+    const root = document.getElementById("years-root");
+    if (state.years.length === 0) {
+      root.innerHTML = `
+        <div class="text-center py-16 border-2 border-dashed border-line rounded-2xl bg-panel/40">
+          <p class="text-muted font-medium">עדיין לא נוספו שנות לימוד</p>
+          <p class="text-muted/60 text-sm mt-1">לחצו על "הוספת שנת לימודים" למטה כדי להתחיל</p>
+        </div>`;
+      return;
+    }
+    if (years.length === 0) {
+      root.innerHTML = `<div class="text-center py-10 text-muted text-sm">אין תוצאות עבור הסינון הנוכחי</div>`;
+      return;
+    }
+    root.innerHTML = years.map(renderYearBlock).join("");
+  }
+
+  function renderYearBlock(year) {
+    const stats = yearStats(year);
+    const semesters = visibleSemesters(year);
+    return `
+      <section class="bg-panel rounded-2xl border border-line overflow-hidden">
+        <div class="flex items-center justify-between gap-3 px-4 sm:px-5 py-3 bg-panel2 border-b border-line">
+          <div class="flex items-center gap-2">
+            <h2 class="font-bold text-ink2 text-base sm:text-lg">${esc(year.name)}</h2>
+            <span class="text-xs text-muted font-mono" data-year-summary="${year.id}">ממוצע שנתי: ${stats.gpa !== null ? fmt(stats.gpa, 2) : "—"} · ${fmt(stats.totalCredits, 0)} נק&quot;ז</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <button data-action="add-semester" data-year-id="${year.id}" class="text-xs font-semibold text-accent hover:opacity-80 hover:bg-accentBg/50 rounded-lg px-2.5 py-1.5 transition-colors">+ סמסטר</button>
+            <button data-action="delete-year" data-year-id="${year.id}" class="text-muted hover:text-red-400 rounded-lg px-2 py-1.5 transition-colors" title="מחיקת שנה">✕</button>
+          </div>
+        </div>
+        <div class="p-3 sm:p-4 space-y-4">
+          ${semesters.length ? semesters.map(renderSemesterBlock).join("") : `<p class="text-center text-muted/60 text-sm py-6">אין סמסטרים בשנה זו</p>`}
+        </div>
+      </section>`;
+  }
+
+  function renderSemesterBlock(semester) {
+    const stats = semesterStats(semester);
+    return `
+      <div class="rounded-xl border border-line bg-panel2/60">
+        <div class="flex items-center justify-between gap-3 px-3 sm:px-4 py-2.5">
+          <div class="flex items-center gap-2 flex-wrap">
+            <h3 class="font-semibold text-ink2 text-sm sm:text-base">${esc(semester.name)}</h3>
+            <span class="text-xs text-muted font-mono" data-semester-summary="${semester.id}">ממוצע: ${stats.gpa !== null ? fmt(stats.gpa, 2) : "—"} · ${fmt(stats.totalCredits, 0)} נק&quot;ז</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <button data-action="add-course" data-semester-id="${semester.id}" class="text-xs font-semibold text-accent hover:opacity-80 hover:bg-accentBg/50 rounded-lg px-2.5 py-1.5 transition-colors">+ קורס</button>
+            <button data-action="delete-semester" data-semester-id="${semester.id}" class="text-muted hover:text-red-400 rounded-lg px-2 py-1.5 transition-colors" title="מחיקת סמסטר">✕</button>
+          </div>
+        </div>
+        <div class="px-3 sm:px-4 pb-3 sm:pb-4 space-y-2.5">
+          ${semester.courses.length ? semester.courses.map(renderCourseCard).join("") : `<p class="text-center text-muted/60 text-xs py-4">אין קורסים בסמסטר זה</p>`}
+        </div>
+      </div>`;
+  }
+
+  function renderCourseCard(course) {
+    const result = computeCourseGrade(course);
+    const badge = courseGradeBadgeHTML(course);
+    return `
+      <div class="bg-panel rounded-xl border border-line" data-course-card="${course.id}">
+        <div class="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-3">
+          <button data-action="toggle-expand" data-course-id="${course.id}" class="text-muted hover:text-ink2 shrink-0 transition-transform ${course.expanded ? "rotate-90" : ""}">▶</button>
+          <input type="text" value="${esc(course.name)}" data-field="course-name" data-course-id="${course.id}"
+            class="flex-1 min-w-[100px] font-semibold text-ink2 text-sm sm:text-base bg-transparent border-0 focus:ring-2 focus:ring-accent/40 rounded-lg px-2 py-1" />
+          <div class="flex items-center gap-1 shrink-0">
+            <input type="number" min="0" step="0.5" value="${esc(course.credits)}" data-field="course-credits" data-course-id="${course.id}"
+              class="w-14 text-center text-sm font-mono bg-panel2 text-ink2 border border-line focus:ring-2 focus:ring-accent/40 rounded-lg px-1 py-1" title="נק&quot;ז" />
+            <span class="text-[11px] text-muted hidden sm:inline">נק&quot;ז</span>
+          </div>
+          <label class="flex items-center gap-1 text-[11px] sm:text-xs text-muted shrink-0 cursor-pointer" title="עובר בינארי - לא נכלל בממוצע המספרי">
+            <input type="checkbox" ${course.isBinary ? "checked" : ""} data-field="course-binary" data-course-id="${course.id}" class="rounded">
+            בינארי
+          </label>
+          <span data-grade-badge="${course.id}">${badge}</span>
+          <button data-action="delete-course" data-course-id="${course.id}" class="text-muted hover:text-red-400 shrink-0 px-1 transition-colors" title="מחיקת קורס">✕</button>
+        </div>
+        ${course.expanded ? renderCourseBody(course, result) : ""}
+      </div>`;
+  }
+
+  function renderCourseBody(course, result) {
+    if (course.isBinary) {
+      return `
+        <div class="px-4 sm:px-5 pb-4 border-t border-line pt-3">
+          <p class="text-xs text-muted">קורס מסומן כ"עובר בינארי" — לא ייכלל בחישוב הממוצע המספרי, אך הנק&quot;ז שלו יצטרפו לסך הנק&quot;ז שנצברו.</p>
+        </div>`;
+    }
+
+    const exams = course.components.filter(c => c.type === "exam" || c.type === "quiz");
+    const assignments = course.components.filter(c => c.type === "assignment");
+    const totalWeight = weightSum(course.components);
+    const weightOk = Math.abs(totalWeight - 100) <= 0.01;
+
+    return `
+      <div class="px-3 sm:px-5 pb-4 border-t border-line pt-3 space-y-4">
+
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <h4 class="text-xs font-bold text-muted uppercase tracking-wide">מבחנים ובחנים</h4>
+            <button data-action="add-component" data-type="quiz" data-course-id="${course.id}" class="text-xs font-semibold text-accent hover:opacity-80">+ הוספת בוחן</button>
+          </div>
+          <div class="space-y-1.5">
+            ${exams.length ? exams.map(c => renderComponentRow(course, c, result)).join("") : `<p class="text-xs text-muted/60">אין רכיבי מבחן</p>`}
+          </div>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <h4 class="text-xs font-bold text-muted uppercase tracking-wide">עבודות</h4>
+            <button data-action="add-component" data-type="assignment" data-course-id="${course.id}" class="text-xs font-semibold text-accent hover:opacity-80">+ הוספת עבודה</button>
+          </div>
+          <div class="space-y-1.5">
+            ${assignments.length ? assignments.map(c => renderComponentRow(course, c, result)).join("") : `<p class="text-xs text-muted/60">אין עבודות</p>`}
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center justify-between gap-3 bg-panel2 rounded-xl px-3 py-2.5">
+          <div class="flex items-center gap-2">
+            <span data-weight-summary class="text-xs font-mono font-semibold ${weightOk ? "text-accent" : "text-amber-400"}">
+              סה&quot;כ משקלים: ${fmt(totalWeight, 0)}%${weightOk ? " ✓" : " (נדרש 100%)"}
+            </span>
+          </div>
+          <label class="flex items-center gap-2 text-xs text-muted">
+            בונוס לציון הסופי
+            <input type="number" step="0.5" value="${esc(course.bonusPoints)}" data-field="course-bonus" data-course-id="${course.id}"
+              class="w-16 text-center font-mono bg-panel text-ink2 border border-line focus:ring-2 focus:ring-accent/40 rounded-lg px-1 py-1" />
+          </label>
+        </div>
+
+        <p data-dropped-count="${course.id}" class="text-[11px] text-muted ${result.droppedIds && result.droppedIds.length ? "" : "hidden"}">רכיבי מגן שלא שיפרו את הציון ולא נכללו: ${result.droppedIds ? result.droppedIds.length : 0}</p>
+      </div>`;
+  }
+
+  function renderComponentRow(course, comp, result) {
+    const isDropped = result.droppedIds && result.droppedIds.includes(comp.id);
+    return `
+      <div data-component-row="${comp.id}" class="flex flex-wrap sm:flex-nowrap items-center gap-1.5 sm:gap-2 rounded-lg px-2 py-1.5 ${isDropped ? "bg-panel2 opacity-60" : "bg-panel"} border border-line">
+        <input type="text" value="${esc(comp.name)}" data-field="component-name" data-course-id="${course.id}" data-component-id="${comp.id}"
+          class="flex-1 min-w-[90px] text-sm text-ink2 bg-transparent border-0 focus:ring-2 focus:ring-accent/40 rounded-md px-1.5 py-1" />
+        <div class="flex items-center gap-1">
+          <input type="number" min="0" max="100" step="1" value="${esc(comp.weight)}" data-field="component-weight" data-course-id="${course.id}" data-component-id="${comp.id}"
+            class="w-14 text-center text-sm font-mono bg-panel2 text-ink2 border border-line focus:ring-2 focus:ring-accent/40 rounded-md px-1 py-1" title="משקל %" />
+          <span class="text-[10px] text-muted">%</span>
+        </div>
+        <div class="flex items-center gap-1">
+          <input type="number" min="0" max="100" step="0.5" value="${esc(comp.grade)}" data-field="component-grade" data-course-id="${course.id}" data-component-id="${comp.id}"
+            class="w-14 text-center text-sm font-mono bg-panel2 text-ink2 border border-line focus:ring-2 focus:ring-accent/40 rounded-md px-1 py-1" title="ציון" />
+        </div>
+        ${comp.type === "quiz" || comp.type === "assignment" ? `
+          <label class="flex items-center gap-1 text-[11px] text-muted cursor-pointer whitespace-nowrap" title="מגן - נספק בממוצע רק אם ציונו גבוה מהמבחן הסופי">
+            <input type="checkbox" ${comp.isMagen ? "checked" : ""} data-field="component-magen" data-course-id="${course.id}" data-component-id="${comp.id}" class="rounded">
+            מגן
+          </label>` : ""}
+        ${comp.type === "quiz" || comp.type === "assignment" ? `<span data-dropped-label class="text-[10px] text-muted whitespace-nowrap ${isDropped ? "" : "hidden"}">לא נכלל</span>` : ""}
+        <button data-action="delete-component" data-course-id="${course.id}" data-component-id="${comp.id}" class="text-muted hover:text-red-400 px-1 shrink-0">✕</button>
+      </div>`;
+  }
+
+  /* ============================================================
+     FULL RENDER + LIGHTWEIGHT UPDATE
+  ============================================================ */
+  function render() {
+    renderDashboard();
+    renderRecommendation();
+    renderFilterBar();
+    renderYearsRoot();
+  }
+
+  // Called on every keystroke in a grade/weight/credits/bonus field:
+  // updates state (already done by caller) and refreshes only computed numbers,
+  // so the focused input never loses focus/cursor position.
+  function updateComputedOnly() {
+    document.querySelectorAll("[data-grade-badge]").forEach(el => {
+      const courseId = el.getAttribute("data-grade-badge");
+      const { course } = locateCourse(courseId);
+      if (course) el.innerHTML = courseGradeBadgeHTML(course);
+    });
+    document.querySelectorAll("[data-course-card]").forEach(el => {
+      const courseId = el.getAttribute("data-course-card");
+      const { course } = locateCourse(courseId);
+      if (!course || course.isBinary) return;
+      const result = computeCourseGrade(course);
+      const totalWeight = weightSum(course.components);
+      const weightOk = Math.abs(totalWeight - 100) <= 0.01;
+      const weightLabel = el.querySelector("[data-weight-summary]");
+      if (weightLabel) {
+        weightLabel.textContent = `סה"כ משקלים: ${fmt(totalWeight, 0)}%${weightOk ? " ✓" : " (נדרש 100%)"}`;
+        weightLabel.className = `text-xs font-mono font-semibold ${weightOk ? "text-accent" : "text-amber-400"}`;
+      }
+
+      const droppedIds = result.droppedIds || [];
+      course.components.forEach(comp => {
+        const row = el.querySelector(`[data-component-row="${comp.id}"]`);
+        if (!row) return;
+        const isDropped = droppedIds.includes(comp.id);
+        row.className = `flex flex-wrap sm:flex-nowrap items-center gap-1.5 sm:gap-2 rounded-lg px-2 py-1.5 ${isDropped ? "bg-panel2 opacity-60" : "bg-panel"} border border-line`;
+        const label = row.querySelector("[data-dropped-label]");
+        if (label) label.classList.toggle("hidden", !isDropped);
+      });
+
+      const droppedCount = el.querySelector(`[data-dropped-count="${course.id}"]`);
+      if (droppedCount) {
+        droppedCount.textContent = `רכיבי מגן שלא שיפרו את הציון ולא נכללו: ${droppedIds.length}`;
+        droppedCount.classList.toggle("hidden", droppedIds.length === 0);
+      }
+    });
+    renderDashboard();
+    renderRecommendation();
+    renderFilterBarSummaries();
+  }
+
+  function renderFilterBarSummaries() {
+    // Filter bar chip labels don't show numbers themselves; year/semester summaries
+    // live inside course tree headers, so just refresh those in place.
+    document.querySelectorAll("[data-year-summary]").forEach(el => {
+      const yearId = el.getAttribute("data-year-summary");
+      const year = findYear(yearId);
+      if (year) {
+        const stats = yearStats(year);
+        el.textContent = `ממוצע שנתי: ${stats.gpa !== null ? fmt(stats.gpa, 2) : "—"} · ${fmt(stats.totalCredits, 0)} נק"ז`;
+      }
+    });
+    document.querySelectorAll("[data-semester-summary]").forEach(el => {
+      const semId = el.getAttribute("data-semester-summary");
+      const { semester } = locateSemester(semId);
+      if (semester) {
+        const stats = semesterStats(semester);
+        el.textContent = `ממוצע: ${stats.gpa !== null ? fmt(stats.gpa, 2) : "—"} · ${fmt(stats.totalCredits, 0)} נק"ז`;
+      }
+    });
+  }
+
+  /* ============================================================
+     TOAST
+  ============================================================ */
+  function showToast(msg) {
+    const root = document.getElementById("toast-root");
+    const el = document.createElement("div");
+    el.className = "fade-in pointer-events-auto bg-panel border border-line text-ink2 text-sm font-medium px-4 py-2 rounded-xl";
+    el.textContent = msg;
+    root.appendChild(el);
+    setTimeout(() => { el.remove(); }, 2200);
+  }
+
+  /* ============================================================
+     EVENT DELEGATION
+  ============================================================ */
+  // Select all text on focus for number fields, so typing a new value never
+  // concatenates with what was already there (e.g. clicking a "0" field and
+  // typing "20" would otherwise leave "020").
+  document.addEventListener("focus", function (e) {
+    if (e.target.matches && e.target.matches('input[type="number"][data-field]')) {
+      e.target.select();
+    }
+  }, true);
+
+  document.addEventListener("click", function (e) {
+    const btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    const action = btn.getAttribute("data-action");
+    const courseId = btn.getAttribute("data-course-id");
+    const semesterId = btn.getAttribute("data-semester-id");
+    const yearId = btn.getAttribute("data-year-id");
+    const componentId = btn.getAttribute("data-component-id");
+    const type = btn.getAttribute("data-type");
+
+    switch (action) {
+      case "add-year": addYear(); break;
+      case "delete-year": deleteYear(yearId); break;
+      case "add-semester": addSemester(yearId); break;
+      case "delete-semester": deleteSemester(semesterId); break;
+      case "add-course": addCourse(semesterId); break;
+      case "delete-course": deleteCourse(courseId); break;
+      case "toggle-expand": toggleCourseExpanded(courseId); break;
+      case "add-component": addComponent(courseId, type); break;
+      case "delete-component": deleteComponent(courseId, componentId); break;
+      case "reset-all": resetAll(); break;
+      case "apply-recommendation": applyRecommendation(courseId); break;
+      case "filter-all":
+        state.filter = { mode: "all", yearId: null, semesterId: null };
+        render();
+        break;
+      case "filter-year":
+        state.filter = { mode: "year", yearId, semesterId: null };
+        render();
+        break;
+      case "filter-semester":
+        state.filter = { mode: "semester", yearId, semesterId };
+        render();
+        break;
+    }
+  });
+
+  document.addEventListener("input", function (e) {
+    const field = e.target.getAttribute && e.target.getAttribute("data-field");
+    if (!field) return;
+    const courseId = e.target.getAttribute("data-course-id");
+    const componentId = e.target.getAttribute("data-component-id");
+
+    if (field === "course-name") {
+      const { course } = locateCourse(courseId);
+      if (course) course.name = e.target.value;
+      return; // no computed values depend on the name
+    }
+    if (field === "course-credits") {
+      const { course } = locateCourse(courseId);
+      if (course) course.credits = clampNumber(e.target.value, 0, 999);
+      updateComputedOnly();
+      return;
+    }
+    if (field === "course-bonus") {
+      const { course } = locateCourse(courseId);
+      if (course) course.bonusPoints = clampNumber(e.target.value, -100, 100);
+      updateComputedOnly();
+      return;
+    }
+    if (field === "component-name") {
+      const { course } = locateCourse(courseId);
+      const comp = course && course.components.find(c => c.id === componentId);
+      if (comp) comp.name = e.target.value;
+      return;
+    }
+    if (field === "component-weight") {
+      const { course } = locateCourse(courseId);
+      const comp = course && course.components.find(c => c.id === componentId);
+      if (comp) comp.weight = clampNumber(e.target.value, 0, 100);
+      updateComputedOnly();
+      return;
+    }
+    if (field === "component-grade") {
+      const { course } = locateCourse(courseId);
+      const comp = course && course.components.find(c => c.id === componentId);
+      if (comp) comp.grade = clampNumber(e.target.value, 0, 100);
+      updateComputedOnly();
+      return;
+    }
+  });
+
+  document.addEventListener("change", function (e) {
+    const field = e.target.getAttribute && e.target.getAttribute("data-field");
+    if (!field) return;
+    const courseId = e.target.getAttribute("data-course-id");
+    const componentId = e.target.getAttribute("data-component-id");
+
+    if (field === "course-binary") {
+      const { course } = locateCourse(courseId);
+      if (course) course.isBinary = e.target.checked;
+      render();
+      return;
+    }
+    if (field === "component-magen") {
+      const { course } = locateCourse(courseId);
+      const comp = course && course.components.find(c => c.id === componentId);
+      if (comp) comp.isMagen = e.target.checked;
+      render();
+      return;
+    }
+    // Grade/weight/credits/bonus are already fully reflected (including per-row
+    // Magen styling) by updateComputedOnly() on every keystroke via the "input"
+    // handler above — no additional work needed on blur. Deliberately NOT calling
+    // render() here: a full re-render on blur would destroy and recreate the input
+    // the user just clicked into, silently swallowing their next keystrokes.
+  });
+
+  function clampNumber(raw, min, max) {
+    if (raw === "" || raw === null || raw === undefined) return "";
+    let n = Number(raw);
+    if (!isFinite(n)) return "";
+    if (n < min) n = min;
+    if (n > max) n = max;
+    return n;
+  }
+
+  /* ============================================================
+     INIT
+  ============================================================ */
+  render();
+})();
+</script>
+</body>
+</html>
