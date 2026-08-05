@@ -887,6 +887,15 @@
     e.target.value = ""; // allow re-importing the same filename later
   });
 
+  // Extra safety net for mobile browsers: iOS in particular can suspend or kill
+  // the tab process without warning when the app is backgrounded, so force a
+  // save on every signal that the page might be about to disappear — not just
+  // on the "beforeunload" a desktop browser would reliably fire.
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") persistState();
+  });
+  window.addEventListener("pagehide", persistState);
+
   document.addEventListener("click", function (e) {
     const btn = e.target.closest("[data-action]");
     if (!btn) return;

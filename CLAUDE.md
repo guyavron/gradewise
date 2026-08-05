@@ -19,6 +19,7 @@ Single-file Hebrew/RTL university GPA calculator, branded **GradeWise**, dark "a
 - Storage is **per-browser, per-device, per-origin** — there is no login and no server. Two different people opening the same deployed URL each get their own independent `localStorage`, automatically isolated; nothing is shared or synced between them, and switching browsers/devices loses the trail (by design — see the AskUserQuestion decision in conversation history if reconsidering cloud sync later).
 - A one-time toast ("הנתונים שוחזרו מהדפדפן") fires on load only when data was actually restored, so a first-time visit with no saved state stays silent.
 - `resetAll()` calls `persistState()` after clearing `state.years`, so "אפס הכל" also wipes the saved copy — otherwise a reload would immediately restore the just-cleared data.
+- Extra defensive saves on `visibilitychange` (when the tab goes hidden) and `pagehide` (index.html:890-897) — mobile browsers, especially iOS Safari/WebKit, can suspend or kill a backgrounded tab without a reliable `beforeunload`, so these fire `persistState()` on every signal the page might be about to disappear. Every mutation already persists synchronously and immediately (not debounced), so this is redundant insurance, not the primary save path — if data still doesn't survive a close/reopen on a given device after this, the cause is the OS/browser evicting already-written `localStorage`, not a missed save.
 
 ## Manual backup (export/import, index.html:295-330)
 
@@ -151,11 +152,12 @@ Three component types exist on `course.components[]`, each with different Magen 
 |---|---|
 | 878–882 | `focus` listener (capture) — auto-select number-input contents |
 | 884–888 | `#import-file-input` `change` listener — reads the picked file and calls `importBackupFile()`; separate from the main delegated listeners since it needs the raw `FileList` |
-| 890–931 | `click` listener — `switch` over `data-action`, including `"apply-recommendation"`, `"export-backup"`, `"import-backup"` |
-| 934–978 | `input` listener — per-keystroke field updates; `course-name`/`component-name` call `persistState()` directly since they skip `updateComputedOnly()` |
-| 980–1000 | `change` listener — only `course-binary` and `component-magen` call full `render()` |
-| 1002–1009 | `clampNumber(raw, min, max)` |
-| 1013–1016 | `loadPersistedState()` + initial `render()` + restore toast — initial call on load |
+| 890–897 | `visibilitychange` + `pagehide` listeners — defensive `persistState()` calls, see Persistence above |
+| 899–940 | `click` listener — `switch` over `data-action`, including `"apply-recommendation"`, `"export-backup"`, `"import-backup"` |
+| 943–987 | `input` listener — per-keystroke field updates; `course-name`/`component-name` call `persistState()` directly since they skip `updateComputedOnly()` |
+| 989–1009 | `change` listener — only `course-binary` and `component-magen` call full `render()` |
+| 1011–1018 | `clampNumber(raw, min, max)` |
+| 1022–1025 | `loadPersistedState()` + initial `render()` + restore toast — initial call on load |
 
 ## Data model reference
 
