@@ -1,16 +1,24 @@
 # CLAUDE.md — Map of `index.html`
 
-Single-file Hebrew/RTL university GPA calculator, branded **GradeWise**, dark "academic terminal" theme (HTML + Tailwind CDN + vanilla JS, no build step, no persistence). This file is a navigation index into `index.html` so you can jump straight to the relevant lines instead of re-reading the whole file. **Whenever you edit `index.html` in a way that adds/removes/moves a function or section, update the line numbers below.**
+Single-file Hebrew/RTL university GPA calculator, branded **GradeWise**, dark "academic terminal" theme (HTML + Tailwind CDN + vanilla JS, no build step). This file is a navigation index into `index.html` so you can jump straight to the relevant lines instead of re-reading the whole file. **Whenever you edit `index.html` in a way that adds/removes/moves a function or section, update the line numbers below.**
 
 ## How the app works (read this first)
 
-- All app state lives in one in-memory object: `state = { years: [...], filter: {...} }` (index.html:100). No localStorage — a page reload wipes everything, by design.
+- All app state lives in one in-memory object: `state = { years: [...], filter: {...} }` (index.html:100), auto-saved to `localStorage` on every mutation — see Persistence below.
 - Hierarchy: `state.years[]` → `year.semesters[]` → `semester.courses[]` → `course.components[]` (exam / quiz / assignment rows — see Component types below).
 - Two render paths, both important to understand before touching render code:
-  - `render()` (index.html:711) — full rebuild of `#dashboard`, `#recommendation`, `#filter-bar`, `#years-root` via `innerHTML`. Used after **structural** changes (add/delete year/semester/course/component, toggle binary, toggle Magen checkbox, change filter, apply a recommendation). Destroys and recreates every DOM node in those containers.
-  - `updateComputedOnly()` (index.html:721) — **targeted** patch of just the grade badge, weight-sum text, per-row Magen "not included" styling, dashboard numbers, and the recommendation banner, using `querySelector` + direct property assignment (no `innerHTML`). Used on every keystroke in a grade/weight/credits/bonus field (via the `input` listener, index.html:850-894) so the focused input never loses focus/cursor position.
-  - **Do not call `render()` from a `change`/`blur` handler on a text-editing field.** That was tried and reverted (see comment at index.html:907-911) — it destroys the input the user just clicked into and silently eats their next keystroke. If you need a new computed value to refresh live, add a `data-*` hook and patch it inside `updateComputedOnly()` instead.
-- All interactivity is event-delegated on `document` (three listeners: click / input / change, index.html:806 onward) using `data-action` / `data-field` attributes — no per-element `addEventListener` calls, so re-rendered HTML never needs listeners re-attached.
+  - `render()` (index.html:738) — full rebuild of `#dashboard`, `#recommendation`, `#filter-bar`, `#years-root` via `innerHTML`. Used after **structural** changes (add/delete year/semester/course/component, toggle binary, toggle Magen checkbox, change filter, apply a recommendation). Destroys and recreates every DOM node in those containers.
+  - `updateComputedOnly()` (index.html:749) — **targeted** patch of just the grade badge, weight-sum text, per-row Magen "not included" styling, dashboard numbers, and the recommendation banner, using `querySelector` + direct property assignment (no `innerHTML`). Used on every keystroke in a grade/weight/credits/bonus field (via the `input` listener, index.html:879-923) so the focused input never loses focus/cursor position.
+  - **Do not call `render()` from a `change`/`blur` handler on a text-editing field.** That was tried and reverted (see comment at index.html:938-942) — it destroys the input the user just clicked into and silently eats their next keystroke. If you need a new computed value to refresh live, add a `data-*` hook and patch it inside `updateComputedOnly()` instead.
+- All interactivity is event-delegated on `document` (three listeners: click / input / change, index.html:835 onward) using `data-action` / `data-field` attributes — no per-element `addEventListener` calls, so re-rendered HTML never needs listeners re-attached.
+
+## Persistence (`localStorage`, index.html:105-129)
+
+- **Auto-save only, no accounts.** `persistState()` (index.html:109-116) writes `{ years, filter }` to `localStorage` under the key `"gradewise-state-v1"` on every mutation. It's called from `render()`, from inside `updateComputedOnly()`, and explicitly from the two `input`-listener branches that skip `updateComputedOnly()` (`course-name`, `component-name`, index.html:879-923) — every state-mutating code path ends up persisting.
+- `loadPersistedState()` (index.html:117-129) runs once at the bottom of the IIFE, before the first `render()` (index.html:954-959). It's defensive: wrapped in try/catch, requires `parsed.years` to be an array, and silently starts fresh (empty state) on any parse failure or missing data — never throws, never blocks load.
+- Storage is **per-browser, per-device, per-origin** — there is no login and no server. Two different people opening the same deployed URL each get their own independent `localStorage`, automatically isolated; nothing is shared or synced between them, and switching browsers/devices loses the trail (by design — see the AskUserQuestion decision in conversation history if reconsidering cloud sync later).
+- A one-time toast ("הנתונים שוחזרו מהדפדפן") fires on load only when data was actually restored (index.html:957-959), so a first-time visit with no saved state stays silent.
+- `resetAll()` (index.html:266-274) calls `persistState()` after clearing `state.years`, so "אפס הכל" also wipes the saved copy — otherwise a reload would immediately restore the just-cleared data.
 
 ## Component types (exam / quiz / assignment)
 
@@ -69,75 +77,76 @@ Three component types exist on `course.components[]`, each with different Magen 
 |---|---|
 | 98 | `HEBREW_ORDINALS` |
 | 100–103 | `state` object shape |
-| 105–107 | `uid()` |
-| 109–112 | `ordinalYearName(index)` |
-| 114–119 | `nextSemesterName(count)` |
-| 124–149 | `findYear`, `locateSemester`, `locateCourse` |
-| 146–149 | `allCourses()` |
+| 105–129 | `STORAGE_KEY`, `persistState()`, `loadPersistedState()` — see Persistence above |
+| 131–133 | `uid()` |
+| 135–138 | `ordinalYearName(index)` |
+| 140–145 | `nextSemesterName(count)` |
+| 150–175 | `findYear`, `locateSemester`, `locateCourse` |
+| 172–175 | `allCourses()` |
 
 ### Mutations (all call `render()` at the end)
 | Lines | What's there |
 |---|---|
-| 155–199 | `addYear`, `deleteYear` (confirm), `addSemester`, `deleteSemester` (confirm), `addCourse` — seeds **one `"exam"` component** (`"מבחן סופי"`, weight 100) |
-| 200–235 | `deleteCourse` (confirm), `toggleCourseExpanded`, `addComponent(courseId, type)` — `type` is `"quiz"` or `"assignment"` (never `"exam"` from the UI), `deleteComponent` |
-| 236–246 | `resetFilter()`, `resetAll()` (confirm + toast) |
-| 248–254 | `applyRecommendation(courseId)` — sets `isBinary = true`, re-renders, toasts |
+| 181–225 | `addYear`, `deleteYear` (confirm), `addSemester`, `deleteSemester` (confirm), `addCourse` — seeds **one `"exam"` component** (`"מבחן סופי"`, weight 100) |
+| 226–261 | `deleteCourse` (confirm), `toggleCourseExpanded`, `addComponent(courseId, type)` — `type` is `"quiz"` or `"assignment"` (never `"exam"` from the UI), `deleteComponent` |
+| 262–274 | `resetFilter()`, `resetAll()` (confirm + `persistState()` + toast) |
+| 275–281 | `applyRecommendation(courseId)` — sets `isBinary = true`, re-renders, toasts |
 
 ### Calculations — **the core grading logic**
 | Lines | What's there |
 |---|---|
-| 259–262 | `num(v)` |
-| 264–266 | `weightSum(components)` |
-| **269–326** | **`computeCourseGrade(course)`** — see Magen logic above |
-| 328–351 | `computeStats(courseList)` — returns `{ gpa, weightedSum, totalCredits, gpaCredits, excludedBinaryCredits, invalidCount, courseCount }`; `weightedSum` is exposed specifically so `recommendBinarySwap` can simulate without recomputing |
-| 354–356 | `semesterStats`, `yearStats`, `cumulativeStats` |
-| **362–382** | **`recommendBinarySwap()`** — see Binary recommendation above |
+| 286–289 | `num(v)` |
+| 291–293 | `weightSum(components)` |
+| **296–353** | **`computeCourseGrade(course)`** — see Magen logic above |
+| 355–378 | `computeStats(courseList)` — returns `{ gpa, weightedSum, totalCredits, gpaCredits, excludedBinaryCredits, invalidCount, courseCount }`; `weightedSum` is exposed specifically so `recommendBinarySwap` can simulate without recomputing |
+| 381–383 | `semesterStats`, `yearStats`, `cumulativeStats` |
+| **389–409** | **`recommendBinarySwap()`** — see Binary recommendation above |
 
 ### Render helpers
 | Lines | What's there |
 |---|---|
-| 386–389 | `esc(str)` |
-| 391–394 | `fmt(n, digits)` |
-| 396–403 | `gradeColorClasses(grade)` |
-| 405–419 | `courseGradeBadgeHTML(course)` |
+| 413–416 | `esc(str)` |
+| 418–421 | `fmt(n, digits)` |
+| 423–430 | `gradeColorClasses(grade)` |
+| 432–446 | `courseGradeBadgeHTML(course)` |
 
 ### Dashboard, recommendation, filter bar
 | Lines | What's there |
 |---|---|
-| 420–444 | `renderDashboard()` |
-| 445–458 | `statCardHTML(label, sub, stats)` |
-| 459–469 | `creditsCardHTML(cumulative)` |
-| **470–495** | **`renderRecommendation()`** — see Binary recommendation above |
-| 496–528 | `renderFilterBar()` |
-| 530–544 | `visibleYears()`, `visibleSemesters(year)` |
+| 447–471 | `renderDashboard()` |
+| 472–485 | `statCardHTML(label, sub, stats)` |
+| 486–496 | `creditsCardHTML(cumulative)` |
+| **497–522** | **`renderRecommendation()`** — see Binary recommendation above |
+| 523–555 | `renderFilterBar()` |
+| 557–571 | `visibleYears()`, `visibleSemesters(year)` |
 
 ### Course tree (`#years-root`)
 | Lines | What's there |
 |---|---|
-| 546–563 | `renderYearsRoot()` |
-| 564–584 | `renderYearBlock(year)` — `data-year-summary="{id}"` |
-| 585–604 | `renderSemesterBlock(semester)` — `data-semester-summary="{id}"` |
-| 605–629 | `renderCourseCard(course)` — `data-grade-badge="{id}"` |
-| 630–681 | `renderCourseBody(course, result)` — exam+quiz section, assignment section, `data-weight-summary`, bonus input, `data-dropped-count="{id}"` |
-| 683–707 | `renderComponentRow(course, comp, result)` — `data-component-row="{comp.id}"`; Magen checkbox/label only for `quiz`/`assignment` |
+| 573–590 | `renderYearsRoot()` |
+| 591–611 | `renderYearBlock(year)` — `data-year-summary="{id}"` |
+| 612–631 | `renderSemesterBlock(semester)` — `data-semester-summary="{id}"` |
+| 632–656 | `renderCourseCard(course)` — `data-grade-badge="{id}"` |
+| 657–709 | `renderCourseBody(course, result)` — exam+quiz section, assignment section, `data-weight-summary`, bonus input, `data-dropped-count="{id}"` |
+| 710–734 | `renderComponentRow(course, comp, result)` — `data-component-row="{comp.id}"`; Magen checkbox/label only for `quiz`/`assignment` |
 
 ### Render orchestration
 | Lines | What's there |
 |---|---|
-| 711–719 | `render()` |
-| 721–760 | `updateComputedOnly()` |
-| 761–781 | `renderFilterBarSummaries()` |
-| 785–793 | `showToast(msg)` |
+| 738–747 | `render()` — persists, then rebuilds dashboard/recommendation/filter bar/years root |
+| 749–788 | `updateComputedOnly()` — persists at the top, then patches computed values in place |
+| 790–810 | `renderFilterBarSummaries()` |
+| 814–822 | `showToast(msg)` |
 
 ### Event delegation
 | Lines | What's there |
 |---|---|
-| 800–804 | `focus` listener (capture) — auto-select number-input contents |
-| 806–847 | `click` listener — `switch` over `data-action`, including `"apply-recommendation"` |
-| 850–894 | `input` listener — per-keystroke field updates |
-| 896–911 | `change` listener — only `course-binary` and `component-magen` call full `render()` |
-| 914–921 | `clampNumber(raw, min, max)` |
-| 923–926 | `render()` — initial call on load |
+| 829–833 | `focus` listener (capture) — auto-select number-input contents |
+| 835–876 | `click` listener — `switch` over `data-action`, including `"apply-recommendation"` |
+| 879–923 | `input` listener — per-keystroke field updates; `course-name`/`component-name` call `persistState()` directly since they skip `updateComputedOnly()` |
+| 925–943 | `change` listener — only `course-binary` and `component-magen` call full `render()` |
+| 945–952 | `clampNumber(raw, min, max)` |
+| 957–959 | `loadPersistedState()` + initial `render()` + restore toast — initial call on load |
 
 ## Data model reference
 
@@ -154,7 +163,7 @@ component (assignment) = { id, type: "assignment", name, weight, grade, isMagen 
 
 ## Known intentional behaviors (not bugs)
 
-- Reload = full reset. No localStorage/sessionStorage by design.
+- Data survives reload (auto-saved to `localStorage`, see Persistence above) but is scoped to one browser on one device — there is no account system, no cross-device sync, and no way for two people to share a data set. This was an explicit choice over building real accounts (which would need a backend GitHub Pages can't host).
 - A course's *raw* weight-sum badge always reflects the un-redistributed input weights (must total 100%); Magen weight redistribution only affects the *internal* grade calculation.
 - No "add exam" button by design — only quizzes and assignments can be added freely; the single seeded exam per course is the Magen anchor.
 - The binary recommendation only ever proposes one course at a time (the single best swap), not a ranked list or multi-course optimization — re-click "סמן כעובר בינארי" and let it recompute for the next-best candidate if the user wants to keep going.

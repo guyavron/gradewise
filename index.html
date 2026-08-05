@@ -102,6 +102,32 @@
     filter: { mode: "all", yearId: null, semesterId: null } // mode: all | year | semester
   };
 
+  const STORAGE_KEY = "gradewise-state-v1";
+
+  // Auto-saves to this browser only (localStorage) — no accounts, no server.
+  // Each browser/device has its own independent copy; nothing is shared or synced.
+  function persistState() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ years: state.years, filter: state.filter }));
+    } catch (e) {
+      // Storage unavailable (private browsing, quota, etc.) — fail silently, app still works in-memory
+    }
+  }
+
+  function loadPersistedState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !Array.isArray(parsed.years)) return false;
+      state.years = parsed.years;
+      if (parsed.filter) state.filter = parsed.filter;
+      return state.years.length > 0;
+    } catch (e) {
+      return false;
+    }
+  }
+
   function uid() {
     return "id-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
   }
@@ -241,6 +267,7 @@
     if (!confirm("לאפס את כל הנתונים? הפעולה אינה הפיכה.")) return;
     state.years = [];
     resetFilter();
+    persistState();
     render();
     showToast("כל הנתונים אופסו");
   }
@@ -709,6 +736,7 @@
      FULL RENDER + LIGHTWEIGHT UPDATE
   ============================================================ */
   function render() {
+    persistState();
     renderDashboard();
     renderRecommendation();
     renderFilterBar();
@@ -719,6 +747,7 @@
   // updates state (already done by caller) and refreshes only computed numbers,
   // so the focused input never loses focus/cursor position.
   function updateComputedOnly() {
+    persistState();
     document.querySelectorAll("[data-grade-badge]").forEach(el => {
       const courseId = el.getAttribute("data-grade-badge");
       const { course } = locateCourse(courseId);
@@ -849,6 +878,7 @@
     if (field === "course-name") {
       const { course } = locateCourse(courseId);
       if (course) course.name = e.target.value;
+      persistState();
       return; // no computed values depend on the name
     }
     if (field === "course-credits") {
@@ -867,6 +897,7 @@
       const { course } = locateCourse(courseId);
       const comp = course && course.components.find(c => c.id === componentId);
       if (comp) comp.name = e.target.value;
+      persistState();
       return;
     }
     if (field === "component-weight") {
@@ -923,7 +954,9 @@
   /* ============================================================
      INIT
   ============================================================ */
+  const restored = loadPersistedState();
   render();
+  if (restored) showToast("הנתונים שוחזרו מהדפדפן");
 })();
 </script>
 </body>
