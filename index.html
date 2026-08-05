@@ -52,7 +52,7 @@
 <div class="max-w-6xl mx-auto px-4 sm:px-6 py-6 pb-24">
 
   <!-- Header -->
-  <header class="flex items-center justify-between gap-3 mb-6">
+  <header class="flex flex-wrap items-center justify-between gap-3 mb-6">
     <div class="flex items-center gap-3">
       <div class="w-11 h-11 rounded-2xl bg-accent text-[#07231d] flex items-center justify-center text-sm font-mono font-bold">GW</div>
       <div>
@@ -62,9 +62,18 @@
         <p class="text-xs sm:text-sm text-muted">ניהול ציונים, קורסים וממוצעים לאורך התואר</p>
       </div>
     </div>
-    <button data-action="reset-all" class="text-xs sm:text-sm font-medium text-muted hover:text-red-400 border border-line hover:border-red-800 hover:bg-red-950/30 rounded-xl px-3 py-2 transition-colors">
-      אפס הכל
-    </button>
+    <div class="flex items-center gap-2">
+      <input type="file" id="import-file-input" accept="application/json" class="hidden" />
+      <button data-action="export-backup" class="text-xs sm:text-sm font-medium text-muted hover:text-accent border border-line hover:border-accent/50 hover:bg-accentBg/30 rounded-xl px-3 py-2 transition-colors">
+        ייצוא גיבוי
+      </button>
+      <button data-action="import-backup" class="text-xs sm:text-sm font-medium text-muted hover:text-accent border border-line hover:border-accent/50 hover:bg-accentBg/30 rounded-xl px-3 py-2 transition-colors">
+        ייבוא גיבוי
+      </button>
+      <button data-action="reset-all" class="text-xs sm:text-sm font-medium text-muted hover:text-red-400 border border-line hover:border-red-800 hover:bg-red-950/30 rounded-xl px-3 py-2 transition-colors">
+        אפס הכל
+      </button>
+    </div>
   </header>
 
   <!-- Dashboard -->
@@ -278,6 +287,46 @@
     course.isBinary = true;
     render();
     showToast(`"${course.name}" סומן כעובר בינארי`);
+  }
+
+  // Manual backup/restore — a safety net independent of localStorage, since
+  // browser storage isn't guaranteed to survive indefinitely (e.g. iOS is known
+  // to evict site storage more aggressively than desktop browsers).
+  function exportBackup() {
+    const payload = { years: state.years, filter: state.filter, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `gradewise-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast("קובץ הגיבוי הורד");
+  }
+
+  function importBackupFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(reader.result);
+      } catch (e) {
+        showToast("קובץ לא תקין");
+        return;
+      }
+      if (!parsed || !Array.isArray(parsed.years)) {
+        showToast("קובץ לא תקין");
+        return;
+      }
+      if (!confirm("ייבוא הגיבוי יחליף את כל הנתונים הנוכחיים. להמשיך?")) return;
+      state.years = parsed.years;
+      if (parsed.filter) state.filter = parsed.filter; else resetFilter();
+      render();
+      showToast("הגיבוי יובא בהצלחה");
+    };
+    reader.readAsText(file);
   }
 
   /* ============================================================
@@ -832,6 +881,12 @@
     }
   }, true);
 
+  document.getElementById("import-file-input").addEventListener("change", function (e) {
+    const file = e.target.files && e.target.files[0];
+    if (file) importBackupFile(file);
+    e.target.value = ""; // allow re-importing the same filename later
+  });
+
   document.addEventListener("click", function (e) {
     const btn = e.target.closest("[data-action]");
     if (!btn) return;
@@ -854,6 +909,8 @@
       case "delete-component": deleteComponent(courseId, componentId); break;
       case "reset-all": resetAll(); break;
       case "apply-recommendation": applyRecommendation(courseId); break;
+      case "export-backup": exportBackup(); break;
+      case "import-backup": document.getElementById("import-file-input").click(); break;
       case "filter-all":
         state.filter = { mode: "all", yearId: null, semesterId: null };
         render();

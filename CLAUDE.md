@@ -17,8 +17,15 @@ Single-file Hebrew/RTL university GPA calculator, branded **GradeWise**, dark "a
 - **Auto-save only, no accounts.** `persistState()` (index.html:109-116) writes `{ years, filter }` to `localStorage` under the key `"gradewise-state-v1"` on every mutation. It's called from `render()`, from inside `updateComputedOnly()`, and explicitly from the two `input`-listener branches that skip `updateComputedOnly()` (`course-name`, `component-name`, index.html:879-923) — every state-mutating code path ends up persisting.
 - `loadPersistedState()` (index.html:117-129) runs once at the bottom of the IIFE, before the first `render()` (index.html:954-959). It's defensive: wrapped in try/catch, requires `parsed.years` to be an array, and silently starts fresh (empty state) on any parse failure or missing data — never throws, never blocks load.
 - Storage is **per-browser, per-device, per-origin** — there is no login and no server. Two different people opening the same deployed URL each get their own independent `localStorage`, automatically isolated; nothing is shared or synced between them, and switching browsers/devices loses the trail (by design — see the AskUserQuestion decision in conversation history if reconsidering cloud sync later).
-- A one-time toast ("הנתונים שוחזרו מהדפדפן") fires on load only when data was actually restored (index.html:957-959), so a first-time visit with no saved state stays silent.
-- `resetAll()` (index.html:266-274) calls `persistState()` after clearing `state.years`, so "אפס הכל" also wipes the saved copy — otherwise a reload would immediately restore the just-cleared data.
+- A one-time toast ("הנתונים שוחזרו מהדפדפן") fires on load only when data was actually restored, so a first-time visit with no saved state stays silent.
+- `resetAll()` calls `persistState()` after clearing `state.years`, so "אפס הכל" also wipes the saved copy — otherwise a reload would immediately restore the just-cleared data.
+
+## Manual backup (export/import, index.html:295-330)
+
+- Added because `localStorage` alone isn't fully reliable long-term — iOS in particular is known to evict site storage for non-installed web pages more aggressively than desktop browsers, so a course list entered only on a phone can vanish between sessions with no error surfaced anywhere.
+- `exportBackup()` (index.html:295-308) serializes `{ years, filter, exportedAt }` to a downloaded `gradewise-backup-YYYY-MM-DD.json` via a `Blob` + temporary `<a download>` — no server round-trip, works entirely client-side.
+- `importBackupFile(file)` (index.html:309-330) reads the file via `FileReader`, validates `parsed.years` is an array before touching state, requires a `confirm()` since it **replaces** `state.years` wholesale (not a merge), then calls `render()` (which persists via the normal path).
+- Wired to two header buttons ("ייצוא גיבוי" / "ייבוא גיבוי", index.html:67-72) plus a hidden `#import-file-input` file picker that "ייבוא גיבוי" triggers by proxy (`data-action="import-backup"` → `.click()` on the file input, index.html:912-913) — the file input's own `change` listener (index.html:884-888) is separate from the main delegated `input`/`change` listeners since it needs the raw `FileList`, not a `data-field`.
 
 ## Component types (exam / quiz / assignment)
 
@@ -68,85 +75,87 @@ Three component types exist on `course.components[]`, each with different Magen 
 
 | Lines | What's there |
 |---|---|
-| 1–46 | `<head>`: meta, title, Google Fonts (Heebo + JetBrains Mono), Tailwind CDN + `tailwind.config` (color tokens + font families), custom `<style>` (checkbox accent-color, no-spinner number inputs, scrollbar, `.fade-in`, `.chip-active`) |
-| 47–85 | Static HTML shell: `#toast-root`, header, empty `#dashboard` / `#recommendation` / `#filter-bar` / `#years-root` containers, "הוספת שנת לימודים" button |
-| 88–923 | `<script>` — everything below is inside one IIFE `(function(){ "use strict"; ... })()` |
+| 1–47 | `<head>`: meta, title, Google Fonts (Heebo + JetBrains Mono), Tailwind CDN + `tailwind.config` (color tokens + font families), custom `<style>` (checkbox accent-color, no-spinner number inputs, scrollbar, `.fade-in`, `.chip-active`) |
+| 48–96 | Static HTML shell: `#toast-root`, header (wordmark + export/import/reset buttons + hidden `#import-file-input`), empty `#dashboard` / `#recommendation` / `#filter-bar` / `#years-root` containers, "הוספת שנת לימודים" button |
+| 100–1018 | `<script>` — everything below is inside one IIFE `(function(){ "use strict"; ... })()` |
 
 ### State & lookups
 | Lines | What's there |
 |---|---|
-| 98 | `HEBREW_ORDINALS` |
-| 100–103 | `state` object shape |
-| 105–129 | `STORAGE_KEY`, `persistState()`, `loadPersistedState()` — see Persistence above |
-| 131–133 | `uid()` |
-| 135–138 | `ordinalYearName(index)` |
-| 140–145 | `nextSemesterName(count)` |
-| 150–175 | `findYear`, `locateSemester`, `locateCourse` |
-| 172–175 | `allCourses()` |
+| 107 | `HEBREW_ORDINALS` |
+| 109–112 | `state` object shape |
+| 114–138 | `STORAGE_KEY`, `persistState()`, `loadPersistedState()` — see Persistence above |
+| 140–142 | `uid()` |
+| 144–147 | `ordinalYearName(index)` |
+| 149–154 | `nextSemesterName(count)` |
+| 159–184 | `findYear`, `locateSemester`, `locateCourse` |
+| 181–184 | `allCourses()` |
 
 ### Mutations (all call `render()` at the end)
 | Lines | What's there |
 |---|---|
-| 181–225 | `addYear`, `deleteYear` (confirm), `addSemester`, `deleteSemester` (confirm), `addCourse` — seeds **one `"exam"` component** (`"מבחן סופי"`, weight 100) |
-| 226–261 | `deleteCourse` (confirm), `toggleCourseExpanded`, `addComponent(courseId, type)` — `type` is `"quiz"` or `"assignment"` (never `"exam"` from the UI), `deleteComponent` |
-| 262–274 | `resetFilter()`, `resetAll()` (confirm + `persistState()` + toast) |
-| 275–281 | `applyRecommendation(courseId)` — sets `isBinary = true`, re-renders, toasts |
+| 190–234 | `addYear`, `deleteYear` (confirm), `addSemester`, `deleteSemester` (confirm), `addCourse` — seeds **one `"exam"` component** (`"מבחן סופי"`, weight 100) |
+| 235–270 | `deleteCourse` (confirm), `toggleCourseExpanded`, `addComponent(courseId, type)` — `type` is `"quiz"` or `"assignment"` (never `"exam"` from the UI), `deleteComponent` |
+| 271–283 | `resetFilter()`, `resetAll()` (confirm + `persistState()` + toast) |
+| 284–293 | `applyRecommendation(courseId)` — sets `isBinary = true`, re-renders, toasts |
+| **295–330** | **`exportBackup()`, `importBackupFile(file)`** — see Manual backup above |
 
 ### Calculations — **the core grading logic**
 | Lines | What's there |
 |---|---|
-| 286–289 | `num(v)` |
-| 291–293 | `weightSum(components)` |
-| **296–353** | **`computeCourseGrade(course)`** — see Magen logic above |
-| 355–378 | `computeStats(courseList)` — returns `{ gpa, weightedSum, totalCredits, gpaCredits, excludedBinaryCredits, invalidCount, courseCount }`; `weightedSum` is exposed specifically so `recommendBinarySwap` can simulate without recomputing |
-| 381–383 | `semesterStats`, `yearStats`, `cumulativeStats` |
-| **389–409** | **`recommendBinarySwap()`** — see Binary recommendation above |
+| 335–338 | `num(v)` |
+| 340–342 | `weightSum(components)` |
+| **345–402** | **`computeCourseGrade(course)`** — see Magen logic above |
+| 404–427 | `computeStats(courseList)` — returns `{ gpa, weightedSum, totalCredits, gpaCredits, excludedBinaryCredits, invalidCount, courseCount }`; `weightedSum` is exposed specifically so `recommendBinarySwap` can simulate without recomputing |
+| 430–432 | `semesterStats`, `yearStats`, `cumulativeStats` |
+| **438–458** | **`recommendBinarySwap()`** — see Binary recommendation above |
 
 ### Render helpers
 | Lines | What's there |
 |---|---|
-| 413–416 | `esc(str)` |
-| 418–421 | `fmt(n, digits)` |
-| 423–430 | `gradeColorClasses(grade)` |
-| 432–446 | `courseGradeBadgeHTML(course)` |
+| 462–465 | `esc(str)` |
+| 467–470 | `fmt(n, digits)` |
+| 472–479 | `gradeColorClasses(grade)` |
+| 481–495 | `courseGradeBadgeHTML(course)` |
 
 ### Dashboard, recommendation, filter bar
 | Lines | What's there |
 |---|---|
-| 447–471 | `renderDashboard()` |
-| 472–485 | `statCardHTML(label, sub, stats)` |
-| 486–496 | `creditsCardHTML(cumulative)` |
-| **497–522** | **`renderRecommendation()`** — see Binary recommendation above |
-| 523–555 | `renderFilterBar()` |
-| 557–571 | `visibleYears()`, `visibleSemesters(year)` |
+| 496–520 | `renderDashboard()` |
+| 521–534 | `statCardHTML(label, sub, stats)` |
+| 535–545 | `creditsCardHTML(cumulative)` |
+| **546–571** | **`renderRecommendation()`** — see Binary recommendation above |
+| 572–605 | `renderFilterBar()` |
+| 606–621 | `visibleYears()`, `visibleSemesters(year)` |
 
 ### Course tree (`#years-root`)
 | Lines | What's there |
 |---|---|
-| 573–590 | `renderYearsRoot()` |
-| 591–611 | `renderYearBlock(year)` — `data-year-summary="{id}"` |
-| 612–631 | `renderSemesterBlock(semester)` — `data-semester-summary="{id}"` |
-| 632–656 | `renderCourseCard(course)` — `data-grade-badge="{id}"` |
-| 657–709 | `renderCourseBody(course, result)` — exam+quiz section, assignment section, `data-weight-summary`, bonus input, `data-dropped-count="{id}"` |
-| 710–734 | `renderComponentRow(course, comp, result)` — `data-component-row="{comp.id}"`; Magen checkbox/label only for `quiz`/`assignment` |
+| 622–639 | `renderYearsRoot()` |
+| 640–660 | `renderYearBlock(year)` — `data-year-summary="{id}"` |
+| 661–680 | `renderSemesterBlock(semester)` — `data-semester-summary="{id}"` |
+| 681–705 | `renderCourseCard(course)` — `data-grade-badge="{id}"` |
+| 706–758 | `renderCourseBody(course, result)` — exam+quiz section, assignment section, `data-weight-summary`, bonus input, `data-dropped-count="{id}"` |
+| 759–783 | `renderComponentRow(course, comp, result)` — `data-component-row="{comp.id}"`; Magen checkbox/label only for `quiz`/`assignment` |
 
 ### Render orchestration
 | Lines | What's there |
 |---|---|
-| 738–747 | `render()` — persists, then rebuilds dashboard/recommendation/filter bar/years root |
-| 749–788 | `updateComputedOnly()` — persists at the top, then patches computed values in place |
-| 790–810 | `renderFilterBarSummaries()` |
-| 814–822 | `showToast(msg)` |
+| 787–796 | `render()` — persists, then rebuilds dashboard/recommendation/filter bar/years root |
+| 798–837 | `updateComputedOnly()` — persists at the top, then patches computed values in place |
+| 839–859 | `renderFilterBarSummaries()` |
+| 863–871 | `showToast(msg)` |
 
 ### Event delegation
 | Lines | What's there |
 |---|---|
-| 829–833 | `focus` listener (capture) — auto-select number-input contents |
-| 835–876 | `click` listener — `switch` over `data-action`, including `"apply-recommendation"` |
-| 879–923 | `input` listener — per-keystroke field updates; `course-name`/`component-name` call `persistState()` directly since they skip `updateComputedOnly()` |
-| 925–943 | `change` listener — only `course-binary` and `component-magen` call full `render()` |
-| 945–952 | `clampNumber(raw, min, max)` |
-| 957–959 | `loadPersistedState()` + initial `render()` + restore toast — initial call on load |
+| 878–882 | `focus` listener (capture) — auto-select number-input contents |
+| 884–888 | `#import-file-input` `change` listener — reads the picked file and calls `importBackupFile()`; separate from the main delegated listeners since it needs the raw `FileList` |
+| 890–931 | `click` listener — `switch` over `data-action`, including `"apply-recommendation"`, `"export-backup"`, `"import-backup"` |
+| 934–978 | `input` listener — per-keystroke field updates; `course-name`/`component-name` call `persistState()` directly since they skip `updateComputedOnly()` |
+| 980–1000 | `change` listener — only `course-binary` and `component-magen` call full `render()` |
+| 1002–1009 | `clampNumber(raw, min, max)` |
+| 1013–1016 | `loadPersistedState()` + initial `render()` + restore toast — initial call on load |
 
 ## Data model reference
 
