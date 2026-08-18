@@ -683,21 +683,25 @@
     const badge = courseGradeBadgeHTML(course);
     return `
       <div class="bg-panel rounded-xl border border-line" data-course-card="${course.id}">
-        <div class="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-3">
-          <button data-action="toggle-expand" data-course-id="${course.id}" class="text-muted hover:text-ink2 shrink-0 transition-transform ${course.expanded ? "rotate-90" : ""}">▶</button>
-          <input type="text" value="${esc(course.name)}" data-field="course-name" data-course-id="${course.id}"
-            class="flex-1 min-w-[100px] font-semibold text-ink2 text-sm sm:text-base bg-transparent border-0 focus:ring-2 focus:ring-accent/40 rounded-lg px-2 py-1" />
-          <div class="flex items-center gap-1 shrink-0">
-            <input type="number" min="0" step="0.5" value="${esc(course.credits)}" data-field="course-credits" data-course-id="${course.id}"
-              class="w-14 text-center text-sm font-mono bg-panel2 text-ink2 border border-line focus:ring-2 focus:ring-accent/40 rounded-lg px-1 py-1" title="נק&quot;ז" />
-            <span class="text-[11px] text-muted hidden sm:inline">נק&quot;ז</span>
+        <div class="px-3 sm:px-4 py-3">
+          <div class="flex items-center gap-2 sm:gap-3">
+            <button data-action="toggle-expand" data-course-id="${course.id}" class="text-muted hover:text-ink2 shrink-0 transition-transform ${course.expanded ? "rotate-90" : ""}">▶</button>
+            <input type="text" value="${esc(course.name)}" data-field="course-name" data-course-id="${course.id}"
+              class="flex-1 min-w-0 font-semibold text-ink2 text-sm sm:text-base bg-transparent border-0 focus:ring-2 focus:ring-accent/40 rounded-lg px-2 py-1" />
+            <button data-action="delete-course" data-course-id="${course.id}" class="text-muted hover:text-red-400 shrink-0 px-1 transition-colors" title="מחיקת קורס">✕</button>
           </div>
-          <label class="flex items-center gap-1 text-[11px] sm:text-xs text-muted shrink-0 cursor-pointer" title="עובר בינארי - לא נכלל בממוצע המספרי">
-            <input type="checkbox" ${course.isBinary ? "checked" : ""} data-field="course-binary" data-course-id="${course.id}" class="rounded">
-            בינארי
-          </label>
-          <span data-grade-badge="${course.id}">${badge}</span>
-          <button data-action="delete-course" data-course-id="${course.id}" class="text-muted hover:text-red-400 shrink-0 px-1 transition-colors" title="מחיקת קורס">✕</button>
+          <div class="flex flex-wrap items-center justify-end gap-2 mt-2">
+            <label class="flex items-center gap-1 text-[11px] sm:text-xs text-muted cursor-pointer" title="עובר בינארי - לא נכלל בממוצע המספרי">
+              <input type="checkbox" ${course.isBinary ? "checked" : ""} data-field="course-binary" data-course-id="${course.id}" class="rounded">
+              בינארי
+            </label>
+            <div class="flex items-center gap-1">
+              <input type="number" min="0" step="0.5" value="${esc(course.credits)}" data-field="course-credits" data-course-id="${course.id}"
+                class="w-14 text-center text-sm font-mono bg-panel2 text-ink2 border border-line focus:ring-2 focus:ring-accent/40 rounded-lg px-1 py-1" title="נק&quot;ז" />
+              <span class="text-[11px] text-muted">נק&quot;ז</span>
+            </div>
+            <span data-grade-badge="${course.id}">${badge}</span>
+          </div>
         </div>
         ${course.expanded ? renderCourseBody(course, result) : ""}
       </div>`;
@@ -759,25 +763,33 @@
   function renderComponentRow(course, comp, result) {
     const isDropped = result.droppedIds && result.droppedIds.includes(comp.id);
     return `
-      <div data-component-row="${comp.id}" class="flex flex-wrap sm:flex-nowrap items-center gap-1.5 sm:gap-2 rounded-lg px-2 py-1.5 ${isDropped ? "bg-panel2 opacity-60" : "bg-panel"} border border-line">
-        <input type="text" value="${esc(comp.name)}" data-field="component-name" data-course-id="${course.id}" data-component-id="${comp.id}"
-          class="flex-1 min-w-[90px] text-sm text-ink2 bg-transparent border-0 focus:ring-2 focus:ring-accent/40 rounded-md px-1.5 py-1" />
-        <div class="flex items-center gap-1">
-          <input type="number" min="0" max="100" step="1" value="${esc(comp.weight)}" data-field="component-weight" data-course-id="${course.id}" data-component-id="${comp.id}"
-            class="w-14 text-center text-sm font-mono bg-panel2 text-ink2 border border-line focus:ring-2 focus:ring-accent/40 rounded-md px-1 py-1" title="משקל %" />
-          <span class="text-[10px] text-muted">%</span>
+      <div data-component-row="${comp.id}" class="rounded-lg px-2 py-1.5 ${isDropped ? "bg-panel2 opacity-60" : "bg-panel"} border border-line">
+        <div class="flex items-center gap-1.5">
+          <input type="text" value="${esc(comp.name)}" data-field="component-name" data-course-id="${course.id}" data-component-id="${comp.id}"
+            class="flex-1 min-w-0 text-sm text-ink2 bg-transparent border-0 focus:ring-2 focus:ring-accent/40 rounded-md px-1.5 py-1" />
+          <button data-action="delete-component" data-course-id="${course.id}" data-component-id="${comp.id}" class="text-muted hover:text-red-400 px-1 shrink-0">✕</button>
         </div>
-        <div class="flex items-center gap-1">
-          <input type="number" min="0" max="100" step="0.5" value="${esc(comp.grade)}" data-field="component-grade" data-course-id="${course.id}" data-component-id="${comp.id}"
-            class="w-14 text-center text-sm font-mono bg-panel2 text-ink2 border border-line focus:ring-2 focus:ring-accent/40 rounded-md px-1 py-1" title="ציון" />
+        <div class="flex flex-wrap items-center gap-3 mt-1 px-1.5">
+          <div>
+            <div class="text-[10px] text-muted mb-0.5">משקל</div>
+            <div class="flex items-center gap-1">
+              <input type="number" min="0" max="100" step="1" value="${esc(comp.weight)}" data-field="component-weight" data-course-id="${course.id}" data-component-id="${comp.id}"
+                class="w-14 text-center text-sm font-mono bg-panel2 text-ink2 border border-line focus:ring-2 focus:ring-accent/40 rounded-md px-1 py-1" title="משקל %" />
+              <span class="text-[10px] text-muted">%</span>
+            </div>
+          </div>
+          <div>
+            <div class="text-[10px] text-muted mb-0.5">ציון</div>
+            <input type="number" min="0" max="100" step="0.5" value="${esc(comp.grade)}" data-field="component-grade" data-course-id="${course.id}" data-component-id="${comp.id}"
+              class="w-14 text-center text-sm font-mono bg-panel2 text-ink2 border border-line focus:ring-2 focus:ring-accent/40 rounded-md px-1 py-1" title="ציון" />
+          </div>
+          ${comp.type === "quiz" || comp.type === "assignment" ? `
+            <label class="flex items-center gap-1 text-[11px] text-muted cursor-pointer whitespace-nowrap self-end pb-1.5" title="מגן - נספק בממוצע רק אם ציונו גבוה מהמבחן הסופי">
+              <input type="checkbox" ${comp.isMagen ? "checked" : ""} data-field="component-magen" data-course-id="${course.id}" data-component-id="${comp.id}" class="rounded">
+              מגן
+            </label>` : ""}
+          ${comp.type === "quiz" || comp.type === "assignment" ? `<span data-dropped-label class="text-[10px] text-muted whitespace-nowrap self-end pb-1.5 ${isDropped ? "" : "hidden"}">לא נכלל</span>` : ""}
         </div>
-        ${comp.type === "quiz" || comp.type === "assignment" ? `
-          <label class="flex items-center gap-1 text-[11px] text-muted cursor-pointer whitespace-nowrap" title="מגן - נספק בממוצע רק אם ציונו גבוה מהמבחן הסופי">
-            <input type="checkbox" ${comp.isMagen ? "checked" : ""} data-field="component-magen" data-course-id="${course.id}" data-component-id="${comp.id}" class="rounded">
-            מגן
-          </label>` : ""}
-        ${comp.type === "quiz" || comp.type === "assignment" ? `<span data-dropped-label class="text-[10px] text-muted whitespace-nowrap ${isDropped ? "" : "hidden"}">לא נכלל</span>` : ""}
-        <button data-action="delete-component" data-course-id="${course.id}" data-component-id="${comp.id}" class="text-muted hover:text-red-400 px-1 shrink-0">✕</button>
       </div>`;
   }
 
@@ -820,7 +832,7 @@
         const row = el.querySelector(`[data-component-row="${comp.id}"]`);
         if (!row) return;
         const isDropped = droppedIds.includes(comp.id);
-        row.className = `flex flex-wrap sm:flex-nowrap items-center gap-1.5 sm:gap-2 rounded-lg px-2 py-1.5 ${isDropped ? "bg-panel2 opacity-60" : "bg-panel"} border border-line`;
+        row.className = `rounded-lg px-2 py-1.5 ${isDropped ? "bg-panel2 opacity-60" : "bg-panel"} border border-line`;
         const label = row.querySelector("[data-dropped-label]");
         if (label) label.classList.toggle("hidden", !isDropped);
       });
