@@ -128,6 +128,10 @@ cd gradewise
 # open index.html in any browser
 ```
 
+## License
+
+[MIT](LICENSE). Feel free to use it or adapt it for your own university.
+
 ---
 
 <p align="center"><i>Built by <a href="https://github.com/guyavron">Guy Avron</a> · Industrial Engineering & Management, Ben-Gurion University</i></p>
