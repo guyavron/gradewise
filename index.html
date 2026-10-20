@@ -289,6 +289,56 @@
     showToast(`"${course.name}" סומן כעובר בינארי`);
   }
 
+  // Demo data — lets a first-time visitor (or a recruiter) see every feature
+  // without typing grades. All names and grades are fictional. Built fresh on
+  // every call so each object gets its own uid().
+  function buildDemoYears() {
+    const exam = (grade, weight) => ({ id: uid(), type: "exam", name: "מבחן סופי", weight, grade, isMagen: false });
+    const quiz = (name, grade, weight, isMagen) => ({ id: uid(), type: "quiz", name, weight, grade, isMagen });
+    const task = (name, grade, weight, isMagen) => ({ id: uid(), type: "assignment", name, weight, grade, isMagen });
+    const course = (name, credits, components, extra = {}) => ({
+      id: uid(), name, credits, isBinary: false, bonusPoints: 0, expanded: false, components, ...extra
+    });
+    const semester = (index, courses) => ({ id: uid(), name: nextSemesterName(index), courses });
+    const year = (index, semesters) => ({ id: uid(), name: ordinalYearName(index), semesters });
+
+    return [
+      year(0, [
+        semester(0, [
+          // Magen quiz beats the exam (92 > 84), so it counts
+          course('חדו"א 1', 5, [quiz("בוחן אמצע", 92, 15, true), exam(84, 85)]),
+          course("מבוא לתכנות", 4, [task("פרויקט", 95, 30, false), exam(81, 70)]),
+          course("מבוא לכלכלה", 3.5, [exam(88, 100)]),
+          course("סדנת מיומנויות למידה", 1, [exam("", 100)], { isBinary: true })
+        ]),
+        semester(1, [
+          // Magen quiz is lower than the exam (70 < 78), so it is dropped and its
+          // weight is redistributed — expanded so the "not included" label is visible
+          course('חדו"א 2', 5, [quiz("בוחן אמצע", 70, 20, true), exam(78, 80)], { expanded: true }),
+          // Low grade on a high-credit course → triggers the pass/fail recommendation
+          course("פיזיקה 1", 4, [exam(64, 100)]),
+          course("סטטיסטיקה 1", 4, [task("תרגילי בית", 90, 20, false), exam(86, 80)])
+        ])
+      ]),
+      year(1, [
+        semester(0, [
+          // Current semester: final exams not taken yet → shows the "ungraded" state
+          course("חקר ביצועים 1", 4, [task("עבודה", 93, 25, false), exam("", 75)]),
+          course("מערכות מידע", 3, [task("פרויקט", 96, 40, false), exam("", 60)])
+        ])
+      ])
+    ];
+  }
+
+  function loadDemoData() {
+    // Only offered on the empty state, so there is never user data to overwrite
+    if (state.years.length > 0) return;
+    state.years = buildDemoYears();
+    resetFilter();
+    render();
+    showToast('נטענו נתוני דמו — "אפס הכל" כדי להתחיל מאפס');
+  }
+
   // Manual backup/restore — a safety net independent of localStorage, since
   // browser storage isn't guaranteed to survive indefinitely (e.g. iOS is known
   // to evict site storage more aggressively than desktop browsers).
@@ -627,6 +677,10 @@
         <div class="text-center py-16 border-2 border-dashed border-line rounded-2xl bg-panel/40">
           <p class="text-muted font-medium">עדיין לא נוספו שנות לימוד</p>
           <p class="text-muted/60 text-sm mt-1">לחצו על "הוספת שנת לימודים" למטה כדי להתחיל</p>
+          <button data-action="load-demo" class="mt-5 text-sm font-semibold bg-accent text-[#07231d] rounded-xl px-4 py-2 hover:opacity-90 transition-opacity">
+            טען נתוני דמו
+          </button>
+          <p class="text-muted/60 text-xs mt-2">נתונים פיקטיביים, רק כדי לראות איך זה עובד</p>
         </div>`;
       return;
     }
@@ -930,6 +984,7 @@
       case "delete-component": deleteComponent(courseId, componentId); break;
       case "reset-all": resetAll(); break;
       case "apply-recommendation": applyRecommendation(courseId); break;
+      case "load-demo": loadDemoData(); break;
       case "export-backup": exportBackup(); break;
       case "import-backup": document.getElementById("import-file-input").click(); break;
       case "filter-all":
