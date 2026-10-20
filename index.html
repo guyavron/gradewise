@@ -47,6 +47,8 @@
 </head>
 <body class="bg-ink text-ink2 min-h-screen">
 
+<div id="import-modal" class="hidden fixed inset-0 z-40 bg-ink overflow-y-auto" role="dialog" aria-modal="true"></div>
+
 <div id="toast-root" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 items-center pointer-events-none"></div>
 
 <div class="max-w-6xl mx-auto px-4 sm:px-6 py-6 pb-24">
@@ -62,8 +64,12 @@
         <p class="text-xs sm:text-sm text-muted">ניהול ציונים, קורסים וממוצעים לאורך התואר</p>
       </div>
     </div>
-    <div class="flex items-center gap-2">
+    <div class="flex flex-wrap items-center gap-2">
       <input type="file" id="import-file-input" accept="application/json" class="hidden" />
+      <input type="file" id="screenshot-input" accept="image/*" multiple class="hidden" />
+      <button data-action="import-screenshot" class="text-xs sm:text-sm font-semibold text-accent border border-accent/50 hover:bg-accentBg/40 rounded-xl px-3 py-2 transition-colors">
+        ייבוא מצילום מסך
+      </button>
       <button data-action="export-backup" class="text-xs sm:text-sm font-medium text-muted hover:text-accent border border-line hover:border-accent/50 hover:bg-accentBg/30 rounded-xl px-3 py-2 transition-colors">
         ייצוא גיבוי
       </button>
@@ -380,6 +386,458 @@
   }
 
   /* ============================================================
+     SCREENSHOT IMPORT (OCR)
+     Reads a screenshot of the BGU grades screen and turns it into
+     courses. Everything runs in the browser: the image never leaves
+     the device. Pipeline:
+       1. analyzeLayout()  — find the colored grade/credits boxes by color
+       2. readScreenshot() — OCR each box separately (digits only) and the
+                             course name next to it
+       3. review modal     — the user checks/fixes every value, then imports
+  ============================================================ */
+  const TESSERACT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+  const ANALYSIS_WIDTH = 940;          // every screenshot is scaled to this width, so pixel thresholds are device-independent
+  const TERMS = ["א", "ב", "קיץ"];     // index = semester index used by nextSemesterName()
+  let ocrWorker = null;                // created once, on first use (lazy loading)
+  let importDraft = null;              // { status, shots: [...] } while the review modal is open
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error("script load failed"));
+      document.head.appendChild(s);
+    });
+  }
+
+  async function getOcrWorker(onStatus) {
+    if (ocrWorker) return ocrWorker;
+    if (!window.Tesseract) {
+      onStatus("טוען את מנוע זיהוי הטקסט (פעם אחת בלבד)…");
+      await loadScript(TESSERACT_URL);
+    }
+    onStatus("טוען מודל לזיהוי עברית…");
+    ocrWorker = await Tesseract.createWorker(["heb", "eng"]);
+    return ocrWorker;
+  }
+
+  async function ocrText(canvas, { digitsOnly = false } = {}) {
+    await ocrWorker.setParameters({
+      tessedit_char_whitelist: digitsOnly ? "0123456789." : "",
+      tessedit_pageseg_mode: digitsOnly ? "7" : "6"   // 7 = a single line, 6 = a block of text
+    });
+    const { data } = await ocrWorker.recognize(canvas);
+    return data.text.replace(/[‎‏]/g, "").replace(/\s+/g, " ").trim();
+  }
+
+  function fileToCanvas(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = ANALYSIS_WIDTH;
+        c.height = Math.round(img.naturalHeight * (ANALYSIS_WIDTH / img.naturalWidth));
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        resolve(c);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("bad image")); };
+      img.src = url;
+    });
+  }
+
+  function cropCanvas(src, x0, y0, x1, y1) {
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(x1 - x0));
+    c.height = Math.max(1, Math.round(y1 - y0));
+    c.getContext("2d").drawImage(src, x0, y0, c.width, c.height, 0, 0, c.width, c.height);
+    return c;
+  }
+
+  // White text on an orange/blue box is hard for OCR. Scale the box 2x (with
+  // smoothing, so strokes stay solid), then turn it into black text on white
+  // with a white margin — OCR engines read that reliably.
+  // (A blocky 3x nearest-neighbor upscale was tried first: it made thin strokes
+  // and "85.00" was read as "35.00".)
+  function boxToCanvas(src, x0, y0, x1, y1) {
+    const S = 2, P = 20;
+    const w = Math.round((x1 - x0) * S), h = Math.round((y1 - y0) * S);
+    const out = document.createElement("canvas");
+    out.width = w + 2 * P;
+    out.height = h + 2 * P;
+    const ctx = out.getContext("2d");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(src, x0, y0, x1 - x0, y1 - y0, P, P, w, h);
+    const img = ctx.getImageData(P, P, w, h), d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const v = Math.min(d[i], d[i + 1], d[i + 2]) > 150 ? 0 : 255; // light text → black, colored box → white
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, out.width, out.height);
+    ctx.putImageData(img, P, P);
+    return out;
+  }
+
+  // Finds every course on the screenshot without OCR, using color only:
+  // grade boxes are blue, credits boxes are orange, both sit on the left half.
+  // Full-width orange bars (status bar, section headers) are ignored because
+  // they also have colored pixels on the right half.
+  function analyzeLayout(canvas) {
+    const W = canvas.width, H = canvas.height, half = Math.floor(W / 2);
+    const d = canvas.getContext("2d").getImageData(0, 0, W, H).data;
+
+    const bands = [];
+    for (let y = 0; y < H; y++) {
+      let left = 0, right = 0, blue = 0, minX = W, maxX = -1;
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4, r = d[i], g = d[i + 1], b = d[i + 2];
+        if (Math.max(r, g, b) - Math.min(r, g, b) <= 90) continue; // not a strong color
+        if (x < half) {
+          left++;
+          if (b > r) blue++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        } else {
+          right++;
+        }
+      }
+      if (left < W * 0.12 || right > W * 0.02) continue; // not a box row
+      const kind = blue > left / 2 ? "grade" : "credits";
+      const last = bands[bands.length - 1];
+      if (last && last.kind === kind && y - last.y1 <= 3) {
+        last.y1 = y;
+        last.x0 = Math.min(last.x0, minX);
+        last.x1 = Math.max(last.x1, maxX);
+      } else {
+        bands.push({ kind, y0: y, y1: y, x0: minX, x1: maxX });
+      }
+    }
+    const boxes = bands.filter(b => b.y1 - b.y0 >= 15);
+
+    // A course = a blue grade box directly on top of an orange credits box,
+    // or a credits box alone (current semester, no grade yet).
+    const courses = [];
+    for (let i = 0; i < boxes.length; i++) {
+      const b = boxes[i], next = boxes[i + 1];
+      if (b.kind === "grade" && next && next.kind === "credits" && next.y0 - b.y1 <= 8) {
+        courses.push({ grade: b, credits: next });
+        i++;
+      } else {
+        courses.push(b.kind === "grade" ? { grade: b, credits: null } : { grade: null, credits: b });
+      }
+    }
+
+    // Each course sits on a white card; the name is to the right of the boxes.
+    // The card's height is measured in the thin white margin LEFT of the boxes,
+    // where there is never any text (a probe on the right side hits long names).
+    const probeX = boxes.length ? Math.max(0, Math.min(...boxes.map(b => b.x0)) - 8) : 0;
+    const isWhite = y => {
+      const i = (y * W + probeX) * 4;
+      return Math.min(d[i], d[i + 1], d[i + 2]) >= 250;
+    };
+    courses.forEach(c => {
+      const top = (c.grade || c.credits).y0, bottom = (c.credits || c.grade).y1;
+      let y0 = top, y1 = bottom;
+      while (y0 > 0 && isWhite(y0 - 1)) y0--;
+      while (y1 < H - 1 && isWhite(y1 + 1)) y1++;
+      const boxRight = Math.max(c.grade ? c.grade.x1 : 0, c.credits ? c.credits.x1 : 0);
+      c.name = { x0: boxRight + 12, y0, x1: Math.round(W * 0.96), y1: y1 + 1 };
+    });
+
+    const titleBottom = boxes.length ? Math.max(0, boxes[0].y0 - 10) : Math.round(H * 0.3);
+    return { courses, title: { x0: 0, y0: 0, x1: W, y1: titleBottom } };
+  }
+
+  // "85.00", "8500", "4.50" → number. Returns null if there's no number.
+  function parseOcrNumber(text) {
+    const m = text.replace(/\s/g, "").match(/(\d{1,3})\.?(\d{2})/);
+    return m ? Number(m[1] + "." + m[2]) : null;
+  }
+
+  // The credits box reads "4.50 נק״ז": the number is on the right, so the left
+  // part with the Hebrew letters is cut off before reading digits. Where exactly
+  // to cut depends on the number's width, so it is read at two cut points:
+  // agreeing reads win; otherwise the one in the exact "d.dd" format wins;
+  // if neither is clean, return null and let the user fill it in (flagged).
+  async function readCredits(canvas, box) {
+    const w = box.x1 - box.x0, reads = [];
+    for (const cut of [0.47, 0.52]) {
+      const text = (await ocrText(boxToCanvas(canvas, box.x0 + w * cut, box.y0 + 4, box.x1 - 12, box.y1 - 4), { digitsOnly: true })).replace(/\s/g, "");
+      const strict = /^\d{1,2}\.\d{2}$/.test(text);
+      const value = parseOcrNumber(text);
+      if (value !== null && value <= 15) reads.push({ value, strict });
+    }
+    if (reads.length === 2 && reads[0].value === reads[1].value) return reads[0].value;
+    const clean = reads.filter(r => r.strict);
+    return clean.length === 1 ? clean[0].value : null;
+  }
+
+  async function readScreenshot(file) {
+    const canvas = await fileToCanvas(file);
+    const layout = analyzeLayout(canvas);
+
+    const titleText = await ocrText(cropCanvas(canvas, layout.title.x0, layout.title.y0, layout.title.x1, layout.title.y1));
+    const tm = titleText.match(/(20\d{2})[^]*?סמסטר\s*(א|ב|קיץ)/);
+    const shot = {
+      fileName: file.name,
+      calYear: tm ? Number(tm[1]) : null,
+      termIndex: tm ? TERMS.indexOf(tm[2]) : 0,
+      yearIndex: 0,
+      rows: []
+    };
+
+    for (const c of layout.courses) {
+      const name = await ocrText(cropCanvas(canvas, c.name.x0, c.name.y0, c.name.x1, c.name.y1));
+      const row = { include: true, name, grade: "", isBinary: false, credits: "", flags: {} };
+
+      if (c.grade) {
+        const g = c.grade;
+        const gradeCanvas = boxToCanvas(canvas, g.x0 + 12, g.y0 + 4, g.x1 - 12, g.y1 - 4);
+        const value = parseOcrNumber(await ocrText(gradeCanvas, { digitsOnly: true }));
+        if (value !== null && value >= 0 && value <= 100) {
+          row.grade = value;
+        } else if ((await ocrText(gradeCanvas)).includes("עובר")) {
+          row.isBinary = true;
+        } else {
+          row.flags.grade = true;
+        }
+      }
+      if (c.credits) {
+        const value = await readCredits(canvas, c.credits);
+        if (value !== null) row.credits = value;
+        else row.flags.credits = true;
+      } else {
+        row.flags.credits = true;
+      }
+      if (!row.name) row.flags.name = true;
+      if (row.credits === 0) row.include = false; // 0-credit courses don't affect anything — skipped by default
+      shot.rows.push(row);
+    }
+    return shot;
+  }
+
+  // Which study year (שנה א׳, ב׳…) does a calendar year like 2026 belong to?
+  // If an earlier import already linked a year, count from it; otherwise the
+  // earliest year in this batch is treated as the first year we know of.
+  function guessYearIndex(calYear, batchYears) {
+    if (!calYear) return Math.max(0, state.years.length - 1);
+    const anchor = state.years.findIndex(y => y.academicYear);
+    if (anchor >= 0) return Math.max(0, anchor + (calYear - state.years[anchor].academicYear));
+    return calYear - Math.min(...batchYears);
+  }
+
+  function normalizeName(s) {
+    return String(s).replace(/["'״׳]/g, "").replace(/\s+/g, " ").trim();
+  }
+
+  function existingSemester(yearIndex, termIndex) {
+    const year = state.years[yearIndex];
+    if (!year) return null;
+    return year.semesters.find(s => s.name === nextSemesterName(termIndex)) || null;
+  }
+
+  function markDuplicates(shot) {
+    const sem = existingSemester(shot.yearIndex, shot.termIndex);
+    const names = new Set((sem ? sem.courses : []).map(c => normalizeName(c.name)));
+    shot.rows.forEach(r => {
+      r.duplicate = names.has(normalizeName(r.name));
+    });
+  }
+
+  async function startScreenshotImport(files) {
+    if (!files.length) return;
+    importDraft = { status: "מתחיל…", shots: [] };
+    renderImportModal();
+    const setStatus = msg => { importDraft.status = msg; renderImportModal(); };
+    try {
+      await getOcrWorker(setStatus);
+      for (let i = 0; i < files.length; i++) {
+        setStatus(files.length > 1 ? `מזהה צילום ${i + 1} מתוך ${files.length}…` : "מזהה את הציונים…");
+        importDraft.shots.push(await readScreenshot(files[i]));
+      }
+    } catch (err) {
+      closeImportModal();
+      showToast("לא הצלחתי לטעון את מנוע הזיהוי. בדקו את החיבור לאינטרנט ונסו שוב");
+      return;
+    }
+    const batchYears = importDraft.shots.map(s => s.calYear).filter(Boolean);
+    importDraft.shots.forEach(s => {
+      s.yearIndex = guessYearIndex(s.calYear, batchYears);
+      markDuplicates(s);
+      s.rows.forEach(r => { if (r.duplicate) r.include = false; });
+    });
+    importDraft.status = null;
+    renderImportModal();
+  }
+
+  function ensureSemester(yearIndex, termIndex, calYear) {
+    while (state.years.length <= yearIndex) {
+      state.years.push({ id: uid(), name: ordinalYearName(state.years.length), semesters: [] });
+    }
+    const year = state.years[yearIndex];
+    if (calYear && !year.academicYear) year.academicYear = calYear;
+    let sem = existingSemester(yearIndex, termIndex);
+    if (!sem) {
+      sem = { id: uid(), name: nextSemesterName(termIndex), courses: [] };
+      year.semesters.push(sem);
+      const order = name => {
+        const i = [0, 1, 2].findIndex(t => nextSemesterName(t) === name);
+        return i < 0 ? 99 : i;
+      };
+      year.semesters.sort((a, b) => order(a.name) - order(b.name));
+    }
+    return sem;
+  }
+
+  function confirmScreenshotImport() {
+    let count = 0;
+    importDraft.shots.forEach(shot => {
+      const rows = shot.rows.filter(r => r.include && String(r.name).trim());
+      if (!rows.length) return;
+      const sem = ensureSemester(shot.yearIndex, shot.termIndex, shot.calYear);
+      rows.forEach(r => {
+        sem.courses.push({
+          id: uid(),
+          name: String(r.name).trim(),
+          credits: r.credits === "" ? 0 : Number(r.credits),
+          isBinary: r.isBinary,
+          bonusPoints: 0,
+          expanded: false,
+          components: [{
+            id: uid(), type: "exam", name: "ציון סופי", weight: 100,
+            grade: r.isBinary || r.grade === "" ? "" : Number(r.grade), isMagen: false
+          }]
+        });
+        count++;
+      });
+    });
+    closeImportModal();
+    render();
+    showToast(count ? `יובאו ${count} קורסים` : "לא נבחרו קורסים לייבוא");
+  }
+
+  function closeImportModal() {
+    importDraft = null;
+    renderImportModal();
+  }
+
+  function renderImportModal() {
+    const root = document.getElementById("import-modal");
+    if (!importDraft) {
+      root.classList.add("hidden");
+      root.innerHTML = "";
+      document.body.style.overflow = "";
+      return;
+    }
+    root.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+
+    if (importDraft.status) {
+      root.innerHTML = `
+        <div class="min-h-full flex items-center justify-center p-4">
+          <div class="bg-panel border border-line rounded-2xl p-6 w-full max-w-sm text-center">
+            <div class="w-8 h-8 mx-auto mb-4 rounded-full border-2 border-line border-t-accent animate-spin"></div>
+            <p class="text-ink2 font-medium">${esc(importDraft.status)}</p>
+            <p class="text-muted text-xs mt-2">הזיהוי רץ על המכשיר שלכם — התמונה לא נשלחת לשום מקום</p>
+          </div>
+        </div>`;
+      return;
+    }
+
+    const selected = importDraft.shots.reduce((n, s) => n + s.rows.filter(r => r.include).length, 0);
+    const flagged = "border-amber-500 bg-amber-950/40";
+    const shotsHTML = importDraft.shots.map((shot, si) => {
+      const yearOptions = [0, 1, 2, 3, 4, 5].map(i =>
+        `<option value="${i}" ${i === shot.yearIndex ? "selected" : ""}>${esc(ordinalYearName(i))}</option>`).join("");
+      const termOptions = [0, 1, 2].map(i =>
+        `<option value="${i}" ${i === shot.termIndex ? "selected" : ""}>${esc(nextSemesterName(i))}</option>`).join("");
+      const detected = shot.calYear
+        ? `זוהה: ${shot.calYear} סמסטר ${TERMS[shot.termIndex]}`
+        : `<span class="text-amber-300">לא זוהתה כותרת — בחרו שנה וסמסטר</span>`;
+      const rowsHTML = shot.rows.length ? shot.rows.map((r, ri) => `
+        <div class="bg-panel2 border border-line rounded-xl p-3 ${r.include ? "" : "opacity-50"}">
+          <div class="flex items-center gap-2">
+            <input type="checkbox" data-imp="include" data-shot="${si}" data-row="${ri}" ${r.include ? "checked" : ""} class="w-4 h-4 shrink-0" aria-label="לייבא את הקורס" />
+            <input type="text" data-imp="name" data-shot="${si}" data-row="${ri}" value="${esc(r.name)}"
+              class="flex-1 min-w-0 bg-panel border ${r.flags.name ? flagged : "border-line"} rounded-lg px-2 py-1.5 text-sm" />
+          </div>
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-2 mt-2 text-xs text-muted">
+            <label class="flex items-center gap-1.5">ציון
+              <input type="number" inputmode="decimal" data-imp="grade" data-shot="${si}" data-row="${ri}" value="${r.grade}" ${r.isBinary ? "disabled" : ""}
+                class="w-16 bg-panel border ${r.flags.grade ? flagged : "border-line"} rounded-lg px-2 py-1 font-mono text-ink2 disabled:opacity-40" />
+            </label>
+            <label class="flex items-center gap-1.5">נק"ז
+              <input type="number" inputmode="decimal" step="0.5" data-imp="credits" data-shot="${si}" data-row="${ri}" value="${r.credits}"
+                class="w-14 bg-panel border ${r.flags.credits ? flagged : "border-line"} rounded-lg px-2 py-1 font-mono text-ink2" />
+            </label>
+            <label class="flex items-center gap-1.5">
+              <input type="checkbox" data-imp="binary" data-shot="${si}" data-row="${ri}" ${r.isBinary ? "checked" : ""} /> עובר (בינארי)
+            </label>
+            ${r.duplicate ? `<span class="text-amber-300">כבר קיים בסמסטר</span>` : ""}
+            ${r.credits === 0 && !r.duplicate ? `<span>0 נק"ז — דילגנו כברירת מחדל</span>` : ""}
+          </div>
+        </div>`).join("")
+        : `<p class="text-sm text-amber-300">לא נמצאו קורסים בצילום הזה. זה צילום של מסך הציונים באפליקציה של BGU?</p>`;
+      return `
+        <section class="bg-panel border border-line rounded-2xl p-4">
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <p class="text-sm text-ink2 font-semibold">צילום ${si + 1} <span class="text-muted font-normal">· ${detected}</span></p>
+            <div class="flex items-center gap-2">
+              <select data-imp="year" data-shot="${si}" class="bg-panel2 border border-line rounded-lg px-2 py-1 text-sm">${yearOptions}</select>
+              <select data-imp="term" data-shot="${si}" class="bg-panel2 border border-line rounded-lg px-2 py-1 text-sm">${termOptions}</select>
+            </div>
+          </div>
+          <div class="space-y-2">${rowsHTML}</div>
+        </section>`;
+    }).join("");
+
+    root.innerHTML = `
+      <div class="max-w-2xl mx-auto p-4 pb-28">
+        <h2 class="text-lg font-bold text-ink2">בדיקה לפני ייבוא</h2>
+        <p class="text-sm text-muted mt-1 mb-4">זיהוי טקסט לא מושלם — עברו על הערכים. שדות <span class="text-amber-300">בצהוב</span> לא זוהו בוודאות.</p>
+        <div class="space-y-4">${shotsHTML}</div>
+      </div>
+      <div class="fixed bottom-0 inset-x-0 bg-ink/95 border-t border-line p-3">
+        <div class="max-w-2xl mx-auto flex gap-2">
+          <button data-action="import-confirm" class="flex-1 text-sm font-semibold bg-accent text-[#07231d] rounded-xl px-4 py-2.5 hover:opacity-90 transition-opacity" ${selected ? "" : "disabled"}>
+            ייבוא ${selected} קורסים
+          </button>
+          <button data-action="import-cancel" class="text-sm font-medium text-muted border border-line rounded-xl px-4 py-2.5 hover:text-ink2">ביטול</button>
+        </div>
+      </div>`;
+  }
+
+  // Typing in the review table updates importDraft in place WITHOUT re-rendering,
+  // so the focused input keeps its cursor (same rule as updateComputedOnly()).
+  // Only checkboxes/selects re-render, since they don't hold a text cursor.
+  function handleImportField(e) {
+    const field = e.target.getAttribute && e.target.getAttribute("data-imp");
+    if (!field || !importDraft) return;
+    const shot = importDraft.shots[Number(e.target.getAttribute("data-shot"))];
+    const row = shot && shot.rows[Number(e.target.getAttribute("data-row"))];
+    const numOrEmpty = v => (v === "" ? "" : Number(v));
+
+    if (e.type === "input") {
+      if (field === "name") row.name = e.target.value;
+      if (field === "grade") { row.grade = numOrEmpty(e.target.value); row.flags.grade = false; }
+      if (field === "credits") { row.credits = numOrEmpty(e.target.value); row.flags.credits = false; }
+      return;
+    }
+    if (field === "include") row.include = e.target.checked;
+    else if (field === "binary") row.isBinary = e.target.checked;
+    else if (field === "year" || field === "term") {
+      if (field === "year") shot.yearIndex = Number(e.target.value);
+      else shot.termIndex = Number(e.target.value);
+      markDuplicates(shot);
+    } else return;
+    renderImportModal();
+  }
+
+  /* ============================================================
      CALCULATIONS
   ============================================================ */
   function num(v) {
@@ -677,10 +1135,15 @@
         <div class="text-center py-16 border-2 border-dashed border-line rounded-2xl bg-panel/40">
           <p class="text-muted font-medium">עדיין לא נוספו שנות לימוד</p>
           <p class="text-muted/60 text-sm mt-1">לחצו על "הוספת שנת לימודים" למטה כדי להתחיל</p>
-          <button data-action="load-demo" class="mt-5 text-sm font-semibold bg-accent text-[#07231d] rounded-xl px-4 py-2 hover:opacity-90 transition-opacity">
-            טען נתוני דמו
-          </button>
-          <p class="text-muted/60 text-xs mt-2">נתונים פיקטיביים, רק כדי לראות איך זה עובד</p>
+          <div class="mt-5 flex flex-wrap justify-center gap-2">
+            <button data-action="load-demo" class="text-sm font-semibold bg-accent text-[#07231d] rounded-xl px-4 py-2 hover:opacity-90 transition-opacity">
+              טען נתוני דמו
+            </button>
+            <button data-action="import-screenshot" class="text-sm font-semibold text-accent border border-accent/50 hover:bg-accentBg/40 rounded-xl px-4 py-2 transition-colors">
+              ייבוא מצילום מסך
+            </button>
+          </div>
+          <p class="text-muted/60 text-xs mt-2">הדמו הוא נתונים פיקטיביים · הייבוא קורא צילום של מסך הציונים באפליקציית BGU</p>
         </div>`;
       return;
     }
@@ -953,6 +1416,17 @@
     e.target.value = ""; // allow re-importing the same filename later
   });
 
+  document.getElementById("screenshot-input").addEventListener("change", function (e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ""; // allow picking the same screenshot again
+    startScreenshotImport(files);
+  });
+
+  // The review modal has its own fields (data-imp), separate from the main
+  // data-field listeners below, which ignore anything without data-field.
+  document.addEventListener("input", handleImportField);
+  document.addEventListener("change", handleImportField);
+
   // Extra safety net for mobile browsers: iOS in particular can suspend or kill
   // the tab process without warning when the app is backgrounded, so force a
   // save on every signal that the page might be about to disappear — not just
@@ -985,6 +1459,9 @@
       case "reset-all": resetAll(); break;
       case "apply-recommendation": applyRecommendation(courseId); break;
       case "load-demo": loadDemoData(); break;
+      case "import-screenshot": document.getElementById("screenshot-input").click(); break;
+      case "import-confirm": confirmScreenshotImport(); break;
+      case "import-cancel": closeImportModal(); break;
       case "export-backup": exportBackup(); break;
       case "import-backup": document.getElementById("import-file-input").click(); break;
       case "filter-all":
