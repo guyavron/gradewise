@@ -82,6 +82,14 @@
     </div>
   </header>
 
+  <!-- In-app browser warning (shown by checkInAppBrowser) -->
+  <div id="inapp-warning" class="hidden mb-6 border border-amber-700/60 bg-amber-950/40 text-amber-200 rounded-2xl p-4 text-sm">
+    <div class="flex items-start justify-between gap-3">
+      <p>נראה שפתחתם את GradeWise מתוך אפליקציה (כמו אינסטגרם או וואטסאפ). דפדפן פנימי לא תמיד שומר את הנתונים — כדי שהציונים יישמרו, פתחו את הקישור בספארי או בכרום.</p>
+      <button data-action="dismiss-inapp" class="shrink-0 text-amber-300 hover:text-amber-100" aria-label="סגירה">✕</button>
+    </div>
+  </div>
+
   <!-- Dashboard -->
   <section id="dashboard" class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6"></section>
 
@@ -398,7 +406,7 @@
   const TESSERACT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
   const ANALYSIS_WIDTH = 940;          // every screenshot is scaled to this width, so pixel thresholds are device-independent
   const TERMS = ["א", "ב", "קיץ"];     // index = semester index used by nextSemesterName()
-  let ocrWorker = null;                // created once, on first use (lazy loading)
+  let ocrWorkers = null;               // created once, on first use (lazy loading)
   let importDraft = null;              // { status, shots: [...] } while the review modal is open
 
   function loadScript(src) {
@@ -411,37 +419,50 @@
     });
   }
 
-  async function getOcrWorker(onStatus) {
-    if (ocrWorker) return ocrWorker;
+  // Two OCR workers: one for Hebrew text (course names, title, "עובר") and a
+  // separate English-only one for numbers. With the Hebrew model loaded, digit
+  // reads were noticeably worse (e.g. "85.00" read as "0"); English-only with
+  // PSM 13 ("raw line") was the most reliable in testing.
+  async function getOcrWorkers(onStatus) {
+    if (ocrWorkers) return ocrWorkers;
     if (!window.Tesseract) {
       onStatus("טוען את מנוע זיהוי הטקסט (פעם אחת בלבד)…");
       await loadScript(TESSERACT_URL);
     }
     onStatus("טוען מודל לזיהוי עברית…");
-    ocrWorker = await Tesseract.createWorker(["heb", "eng"]);
-    return ocrWorker;
+    const text = await Tesseract.createWorker(["heb", "eng"]);
+    await text.setParameters({ tessedit_pageseg_mode: "6" });          // 6 = a block of text
+    const digits = await Tesseract.createWorker("eng");
+    await digits.setParameters({ tessedit_char_whitelist: "0123456789.", tessedit_pageseg_mode: "13" }); // 13 = one raw line
+    ocrWorkers = { text, digits };
+    return ocrWorkers;
   }
 
   async function ocrText(canvas, { digitsOnly = false } = {}) {
-    await ocrWorker.setParameters({
-      tessedit_char_whitelist: digitsOnly ? "0123456789." : "",
-      tessedit_pageseg_mode: digitsOnly ? "7" : "6"   // 7 = a single line, 6 = a block of text
-    });
-    const { data } = await ocrWorker.recognize(canvas);
-    return data.text.replace(/[‎‏]/g, "").replace(/\s+/g, " ").trim();
+    const worker = digitsOnly ? ocrWorkers.digits : ocrWorkers.text;
+    const { data } = await worker.recognize(canvas);
+    return data.text.replace(/[\u200e\u200f]/g, "").replace(/\s+/g, " ").trim();
   }
 
+  // Returns two canvases: "full" is the screenshot at its original resolution
+  // (all text is read from it), "small" is scaled to ANALYSIS_WIDTH (only used
+  // to find the layout, so pixel thresholds are the same on every phone).
+  // f = how many original pixels one "small" pixel is.
   function fileToCanvas(file) {
     return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(file);
       const img = new Image();
       img.onload = () => {
-        const c = document.createElement("canvas");
-        c.width = ANALYSIS_WIDTH;
-        c.height = Math.round(img.naturalHeight * (ANALYSIS_WIDTH / img.naturalWidth));
-        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        const full = document.createElement("canvas");
+        full.width = img.naturalWidth;
+        full.height = img.naturalHeight;
+        full.getContext("2d").drawImage(img, 0, 0);
+        const small = document.createElement("canvas");
+        small.width = ANALYSIS_WIDTH;
+        small.height = Math.round(img.naturalHeight * (ANALYSIS_WIDTH / img.naturalWidth));
+        small.getContext("2d").drawImage(img, 0, 0, small.width, small.height);
         URL.revokeObjectURL(url);
-        resolve(c);
+        resolve({ full, small, f: img.naturalWidth / ANALYSIS_WIDTH });
       };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("bad image")); };
       img.src = url;
@@ -456,30 +477,47 @@
     return c;
   }
 
-  // White text on an orange/blue box is hard for OCR. Scale the box 2x (with
-  // smoothing, so strokes stay solid), then turn it into black text on white
-  // with a white margin — OCR engines read that reliably.
-  // (A blocky 3x nearest-neighbor upscale was tried first: it made thin strokes
-  // and "85.00" was read as "35.00".)
-  function boxToCanvas(src, x0, y0, x1, y1) {
-    const S = 2, P = 20;
-    const w = Math.round((x1 - x0) * S), h = Math.round((y1 - y0) * S);
+  // White text on an orange/blue box is hard for OCR. This turns a box into
+  // black text on white: take each pixel's lightness (white text is light on
+  // all three channels, the colored box is not), resize it to a fixed height
+  // with our own bilinear interpolation, apply a threshold, add a margin.
+  // Resizing is done here in plain JS on purpose: the browser's built-in canvas
+  // smoothing differs between Chrome and Safari, and on an iPhone that turned
+  // "88.00" into "38.00". Doing it ourselves gives the same pixels everywhere.
+  // r = box in "small" coordinates; img = { full, f }.
+  function boxToCanvas(img, r, threshold = 150) {
+    const sx = Math.round(r.x0 * img.f), sy = Math.round(r.y0 * img.f);
+    const sw = Math.max(2, Math.round((r.x1 - r.x0) * img.f)), sh = Math.max(2, Math.round((r.y1 - r.y0) * img.f));
+    const src = img.full.getContext("2d").getImageData(sx, sy, sw, sh).data;
+    const light = new Float32Array(sw * sh);
+    for (let i = 0; i < sw * sh; i++) light[i] = Math.min(src[i * 4], src[i * 4 + 1], src[i * 4 + 2]);
+
+    const outH = Math.round((r.y1 - r.y0) * 2), scale = outH / sh, outW = Math.round(sw * scale), P = 20;
     const out = document.createElement("canvas");
-    out.width = w + 2 * P;
-    out.height = h + 2 * P;
+    out.width = outW + 2 * P;
+    out.height = outH + 2 * P;
     const ctx = out.getContext("2d");
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(src, x0, y0, x1 - x0, y1 - y0, P, P, w, h);
-    const img = ctx.getImageData(P, P, w, h), d = img.data;
-    for (let i = 0; i < d.length; i += 4) {
-      const v = Math.min(d[i], d[i + 1], d[i + 2]) > 150 ? 0 : 255; // light text → black, colored box → white
-      d[i] = d[i + 1] = d[i + 2] = v;
-    }
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, out.width, out.height);
-    ctx.putImageData(img, P, P);
+    const dst = ctx.getImageData(P, P, outW, outH), d = dst.data;
+    for (let y = 0; y < outH; y++) {
+      const fy = Math.min(sh - 1, (y + 0.5) / scale - 0.5), y0 = Math.max(0, Math.floor(fy)), y1 = Math.min(sh - 1, y0 + 1), ty = Math.max(0, fy - y0);
+      for (let x = 0; x < outW; x++) {
+        const fx = Math.min(sw - 1, (x + 0.5) / scale - 0.5), x0 = Math.max(0, Math.floor(fx)), x1 = Math.min(sw - 1, x0 + 1), tx = Math.max(0, fx - x0);
+        const v = (light[y0 * sw + x0] * (1 - tx) + light[y0 * sw + x1] * tx) * (1 - ty)
+                + (light[y1 * sw + x0] * (1 - tx) + light[y1 * sw + x1] * tx) * ty;
+        const o = (y * outW + x) * 4, ink = v > threshold ? 0 : 255;
+        d[o] = d[o + 1] = d[o + 2] = ink;
+        d[o + 3] = 255;
+      }
+    }
+    ctx.putImageData(dst, P, P);
     return out;
+  }
+
+  // Crops a rectangle given in "small" coordinates out of the full-resolution image (1:1, no resizing).
+  function cropFull(img, r) {
+    return cropCanvas(img.full, r.x0 * img.f, r.y0 * img.f, r.x1 * img.f, r.y1 * img.f);
   }
 
   // Finds every course on the screenshot without OCR, using color only:
@@ -558,56 +596,100 @@
     return m ? Number(m[1] + "." + m[2]) : null;
   }
 
-  // The credits box reads "4.50 נק״ז": the number is on the right, so the left
-  // part with the Hebrew letters is cut off before reading digits. Where exactly
-  // to cut depends on the number's width, so it is read at two cut points:
-  // agreeing reads win; otherwise the one in the exact "d.dd" format wins;
-  // if neither is clean, return null and let the user fill it in (flagged).
-  async function readCredits(canvas, box) {
-    const w = box.x1 - box.x0, reads = [];
-    for (const cut of [0.47, 0.52]) {
-      const text = (await ocrText(boxToCanvas(canvas, box.x0 + w * cut, box.y0 + 4, box.x1 - 12, box.y1 - 4), { digitsOnly: true })).replace(/\s/g, "");
-      const strict = /^\d{1,2}\.\d{2}$/.test(text);
-      const value = parseOcrNumber(text);
-      if (value !== null && value <= 15) reads.push({ value, strict });
+  // OCR can misread a digit (8 → 3) and still return a clean-looking number.
+  // So every number is read several times with different preprocessing, and a
+  // value is accepted only if at least two reads agree on it and no other value
+  // gets as many votes. Otherwise we return null and the field is flagged for
+  // the user. Rule: never guess silently — flag instead.
+  async function readNumberVotes(img, rects, thresholds, isValid) {
+    const votes = new Map();
+    for (const r of rects) {
+      for (const t of thresholds) {
+        const value = parseOcrNumber(await ocrText(boxToCanvas(img, r, t), { digitsOnly: true }));
+        if (value !== null && isValid(value)) votes.set(value, (votes.get(value) || 0) + 1);
+      }
     }
-    if (reads.length === 2 && reads[0].value === reads[1].value) return reads[0].value;
-    const clean = reads.filter(r => r.strict);
-    return clean.length === 1 ? clean[0].value : null;
+    const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1]);
+    if (!ranked.length || ranked[0][1] < 2) return null;
+    if (ranked[1] && ranked[1][1] === ranked[0][1]) return null; // a tie = not sure
+    return ranked[0][0];
+  }
+
+  async function readGrade(img, box) {
+    const r = { x0: box.x0 + 12, y0: box.y0 + 4, x1: box.x1 - 12, y1: box.y1 - 4 };
+    return readNumberVotes(img, [r], [100, 120, 150, 180, 200], v => v >= 0 && v <= 100);
+  }
+
+  // The credits box reads "4.50 נק״ז": the number is on the right and the
+  // Hebrew letters on the left, and only the number should be read. A fixed
+  // cut point failed when the number's width changed ("0.00" vs "4.50"), so we
+  // find the real gap: scan the box column by column, mark columns that contain
+  // white text, and cut in the middle of the widest empty run of columns —
+  // the space between the letters and the number is wider than any gap between
+  // digits. Returns an x position in "small" coordinates, or null.
+  function findCreditsCut(img, box) {
+    const sx = Math.round(box.x0 * img.f), sy = Math.round((box.y0 + 4) * img.f);
+    const sw = Math.round((box.x1 - box.x0) * img.f), sh = Math.round((box.y1 - box.y0 - 8) * img.f);
+    const d = img.full.getContext("2d").getImageData(sx, sy, sw, sh).data;
+    const margin = Math.round(sw * 0.05);
+    let best = null, runStart = null;
+    for (let x = margin; x < sw - margin; x++) {
+      let ink = false;
+      for (let y = 0; y < sh && !ink; y++) {
+        const i = (y * sw + x) * 4;
+        if (Math.min(d[i], d[i + 1], d[i + 2]) > 200) ink = true;
+      }
+      if (!ink && runStart === null) runStart = x;
+      if (ink && runStart !== null) {
+        if (runStart > margin && (!best || x - runStart > best.len)) best = { start: runStart, len: x - runStart };
+        runStart = null;
+      }
+    }
+    if (!best) return null;
+    return box.x0 + (best.start + best.len / 2) / img.f;
+  }
+
+  async function readCredits(img, box) {
+    const w = box.x1 - box.x0, gap = findCreditsCut(img, box);
+    const cuts = gap !== null ? [gap] : [box.x0 + w * 0.47, box.x0 + w * 0.52];
+    const rects = cuts.map(x0 => ({ x0, y0: box.y0 + 4, x1: box.x1 - 12, y1: box.y1 - 4 }));
+    return readNumberVotes(img, rects, [100, 120, 150, 180, 200], v => v <= 15);
   }
 
   async function readScreenshot(file) {
-    const canvas = await fileToCanvas(file);
-    const layout = analyzeLayout(canvas);
+    const img = await fileToCanvas(file);
+    const layout = analyzeLayout(img.small);
 
-    const titleText = await ocrText(cropCanvas(canvas, layout.title.x0, layout.title.y0, layout.title.x1, layout.title.y1));
-    const tm = titleText.match(/(20\d{2})[^]*?סמסטר\s*(א|ב|קיץ)/);
+    const titleText = await ocrText(cropFull(img, layout.title));
+    // Hebrew OCR sometimes returns the RTL title in reversed order
+    // ("סמסטר א 2026" instead of "2026 סמסטר א"), so both orders are accepted.
+    const tm = titleText.match(/(20\d{2})[^]*?סמסטר\s*(א|ב|קיץ)/) || titleText.match(/סמסטר\s*(א|ב|קיץ)[^]*?(20\d{2})/);
+    const calYear = tm ? Number(/^20\d{2}$/.test(tm[1]) ? tm[1] : tm[2]) : null;
+    const term = tm ? (/^20\d{2}$/.test(tm[1]) ? tm[2] : tm[1]) : null;
     const shot = {
       fileName: file.name,
-      calYear: tm ? Number(tm[1]) : null,
-      termIndex: tm ? TERMS.indexOf(tm[2]) : 0,
+      calYear,
+      termIndex: term ? TERMS.indexOf(term) : 0,
       yearIndex: 0,
       rows: []
     };
 
     for (const c of layout.courses) {
-      const name = await ocrText(cropCanvas(canvas, c.name.x0, c.name.y0, c.name.x1, c.name.y1));
+      const name = await ocrText(cropFull(img, c.name));
       const row = { include: true, name, grade: "", isBinary: false, credits: "", flags: {} };
 
       if (c.grade) {
-        const g = c.grade;
-        const gradeCanvas = boxToCanvas(canvas, g.x0 + 12, g.y0 + 4, g.x1 - 12, g.y1 - 4);
-        const value = parseOcrNumber(await ocrText(gradeCanvas, { digitsOnly: true }));
-        if (value !== null && value >= 0 && value <= 100) {
+        const value = await readGrade(img, c.grade);
+        if (value !== null) {
           row.grade = value;
-        } else if ((await ocrText(gradeCanvas)).includes("עובר")) {
+        } else if ((await ocrText(boxToCanvas(img, { x0: c.grade.x0 + 12, y0: c.grade.y0 + 4, x1: c.grade.x1 - 12, y1: c.grade.y1 - 4 }))).includes("עובר")) {
           row.isBinary = true;
         } else {
           row.flags.grade = true;
         }
       }
       if (c.credits) {
-        const value = await readCredits(canvas, c.credits);
+        const value = await readCredits(img, c.credits);
         if (value !== null) row.credits = value;
         else row.flags.credits = true;
       } else {
@@ -654,7 +736,7 @@
     renderImportModal();
     const setStatus = msg => { importDraft.status = msg; renderImportModal(); };
     try {
-      await getOcrWorker(setStatus);
+      await getOcrWorkers(setStatus);
       for (let i = 0; i < files.length; i++) {
         setStatus(files.length > 1 ? `מזהה צילום ${i + 1} מתוך ${files.length}…` : "מזהה את הציונים…");
         importDraft.shots.push(await readScreenshot(files[i]));
@@ -1462,6 +1544,7 @@
       case "import-screenshot": document.getElementById("screenshot-input").click(); break;
       case "import-confirm": confirmScreenshotImport(); break;
       case "import-cancel": closeImportModal(); break;
+      case "dismiss-inapp": document.getElementById("inapp-warning").classList.add("hidden"); break;
       case "export-backup": exportBackup(); break;
       case "import-backup": document.getElementById("import-file-input").click(); break;
       case "filter-all":
@@ -1564,8 +1647,28 @@
   /* ============================================================
      INIT
   ============================================================ */
+  // Links opened from inside apps (Instagram, Facebook, TikTok, LinkedIn,
+  // WhatsApp…) load in an embedded browser whose storage is often wiped when
+  // it closes — friends reported re-typing all their courses on every visit.
+  // We can't fix their storage, so we detect the common in-app browsers by
+  // their user-agent string and suggest opening the link in Safari/Chrome.
+  function checkInAppBrowser() {
+    const ua = navigator.userAgent || "";
+    if (/Instagram|FBAN|FBAV|FB_IAB|Messenger|WhatsApp|LinkedInApp|Snapchat|musical_ly|BytedanceWebview|TikTok|Line\//i.test(ua)) {
+      document.getElementById("inapp-warning").classList.remove("hidden");
+    }
+  }
+
+  // Ask the browser to treat our storage as "persistent" so it isn't evicted
+  // under storage pressure. Supported in Chrome/Edge/Firefox (Safari may
+  // ignore it) — harmless where unsupported, and the JSON backup still exists.
+  if (navigator.storage && navigator.storage.persist) {
+    navigator.storage.persist().catch(() => {});
+  }
+
   const restored = loadPersistedState();
   render();
+  checkInAppBrowser();
   if (restored) showToast("הנתונים שוחזרו מהדפדפן");
 })();
 </script>
