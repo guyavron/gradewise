@@ -47,23 +47,19 @@ So I built a tool for my own Ben-Gurion University transcript that I could also 
 
 ## Architecture
 
-The whole app is **one static HTML file** (~1,650 lines, no build step), deployed on GitHub Pages. The OCR engine is loaded **only when the import button is first used**.
+The whole app is **one static HTML file** (~1,700 lines, no build step), deployed on GitHub Pages. The OCR engine is loaded **only when the import button is first used**.
 
 ```mermaid
 flowchart LR
-    U([User input]) --> D{Event delegation<br/>3 listeners on document}
-    D -->|structural change| R["render()<br/>full rebuild"]
-    D -->|keystroke in a field| P["updateComputedOnly()<br/>targeted DOM patch"]
-    R --> S[(state<br/>years → semesters →<br/>courses → components)]
-    P --> S
-    S --> C["computeCourseGrade()<br/>Magen logic"]
-    C --> G["computeStats()<br/>credit-weighted GPA"]
-    G --> REC["recommendBinarySwap()<br/>what-if simulation"]
-    S --> LS[(localStorage<br/>auto-save)]
-    IMG([Screenshot]) --> LAY["analyzeLayout()<br/>find boxes by color"]
-    LAY --> OCR["Tesseract.js<br/>read each field 5×, vote"]
-    OCR --> REV["Review table<br/>user confirms / fixes"]
-    REV --> S
+    U([Type grades]) --> T[(Transcript<br/>years → semesters →<br/>courses → grade parts)]
+    IMG([Screenshot]) --> F["Find the grade and<br/>credits boxes by color"]
+    F --> OCR["Read each number 5×,<br/>keep it only if reads agree"]
+    OCR --> REV["Review table:<br/>user confirms or fixes"]
+    REV --> T
+    T --> C["Course grade<br/>(Magen rules)"]
+    C --> G["Credit-weighted<br/>average"]
+    G --> REC["Pass/fail<br/>recommendation"]
+    T --> SAVE[(Saved in<br/>this browser)]
 ```
 
 ## Key engineering decisions
@@ -82,8 +78,8 @@ flowchart LR
 
 **1. "88" became "38", but only on a real iPhone**
 - *Symptom:* the import passed every local test (19/19 courses), but on my phone one grade came back as 38 instead of 88, with no warning.
-- *Diagnosis:* the test screenshots had been downscaled on the way to me, and browsers resize canvas images differently (Safari's smoothing ≠ Chrome's). So the phone fed slightly different pixels to the OCR, and a thin "8" read as "3". The Hebrew language model was also hurting digit recognition.
-- *Fix:* read text from the **original-resolution** image, do the resizing with my own bilinear interpolation in JavaScript (identical pixels in every browser), use a separate **English-only** OCR worker for digits, and add **voting** across 5 threshold variants. Re-tested on 24 runs (4 real screenshots × widths 750–1290 px + JPEG compression, ~300 numbers): **0 wrong values**.
+- *Diagnosis:* Safari and Chrome shrink images slightly differently. So the phone gave the OCR a slightly different picture than my computer did, and a thin "8" looked like a "3". The Hebrew language model was also bad at reading digits.
+- *Fix:* read numbers from the **full-size** image, do the resizing inside the app itself so every browser gets exactly the same picture, read digits with a separate **English-only** model, and read each number **5 times** with different contrast settings, keeping it only if the reads agree. Re-tested on 4 real screenshots at several phone screen sizes (~300 numbers): **0 wrong values**.
 
 **2. The input that kept losing focus**
 - *Symptom:* while typing a grade, the cursor sometimes jumped out of the field and the next keystroke disappeared.
@@ -93,7 +89,7 @@ flowchart LR
 **3. Data disappearing on phones**
 - *Symptom:* friends had to re-enter all their courses on every visit.
 - *Diagnosis:* a normal refresh kept the data, which ruled out a save bug. Mobile browsers (and especially in-app browsers opened from a chat link) evict or wipe site storage.
-- *Fix:* layered defense: saves on `visibilitychange` / `pagehide`, a `navigator.storage.persist()` request, a manual JSON backup, an in-app-browser warning, and screenshot import, so re-entering a semester takes seconds instead of minutes.
+- *Fix:* several layers, since no single one is enough: save again whenever the app is closed or switched away from, ask the browser not to delete the site's data, a manual backup file, a warning inside in-app browsers, and screenshot import, so re-entering a semester takes seconds instead of minutes.
 
 ## Results
 
