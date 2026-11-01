@@ -94,7 +94,11 @@
   <section id="dashboard" class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6"></section>
 
   <!-- Binary recommendation -->
-  <section id="recommendation" class="mb-6"></section>
+  <section id="recommendation" class="mb-6">
+    <!-- Limits are rebuilt only by render(), so typing a credit limit never loses focus -->
+    <div id="binary-limits"></div>
+    <div id="recommendation-tip"></div>
+  </section>
 
   <!-- Filter bar -->
   <section id="filter-bar" class="mb-6"></section>
@@ -123,7 +127,10 @@
   const state = {
     years: [],
     filter: { mode: "all", yearId: null, semesterId: null }, // mode: all | year | semester
-    maxBinary: 1 // how many courses the student may mark pass/fail (1–3), used by the recommendation
+    // Pass/fail limits set by the university, used by the recommendation:
+    // at most maxBinary courses (1–5) and at most maxBinaryCredits credits ("" = no credit limit)
+    maxBinary: 1,
+    maxBinaryCredits: ""
   };
 
   const STORAGE_KEY = "gradewise-state-v1";
@@ -132,7 +139,7 @@
   // Each browser/device has its own independent copy; nothing is shared or synced.
   function persistState() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ years: state.years, filter: state.filter, maxBinary: state.maxBinary }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ years: state.years, filter: state.filter, maxBinary: state.maxBinary, maxBinaryCredits: state.maxBinaryCredits }));
     } catch (e) {
       // Storage unavailable (private browsing, quota, etc.) — fail silently, app still works in-memory
     }
@@ -147,15 +154,19 @@
       state.years = parsed.years;
       if (parsed.filter) state.filter = parsed.filter;
       state.maxBinary = validMaxBinary(parsed.maxBinary);
+      state.maxBinaryCredits = validMaxBinaryCredits(parsed.maxBinaryCredits);
       return state.years.length > 0;
     } catch (e) {
       return false;
     }
   }
 
-  // Older saves and backups have no maxBinary — fall back to 1
+  // Older saves and backups have no pass/fail limits — fall back to the defaults
   function validMaxBinary(value) {
-    return [1, 2, 3].includes(value) ? value : 1;
+    return [1, 2, 3, 4, 5].includes(value) ? value : 1;
+  }
+  function validMaxBinaryCredits(value) {
+    return typeof value === "number" && value >= 0 ? value : "";
   }
 
   function uid() {
@@ -298,6 +309,7 @@
     state.years = [];
     resetFilter();
     state.maxBinary = 1;
+    state.maxBinaryCredits = "";
     persistState();
     render();
     showToast("כל הנתונים אופסו");
@@ -367,7 +379,7 @@
   // browser storage isn't guaranteed to survive indefinitely (e.g. iOS is known
   // to evict site storage more aggressively than desktop browsers).
   function exportBackup() {
-    const payload = { years: state.years, filter: state.filter, maxBinary: state.maxBinary, exportedAt: new Date().toISOString() };
+    const payload = { years: state.years, filter: state.filter, maxBinary: state.maxBinary, maxBinaryCredits: state.maxBinaryCredits, exportedAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -398,6 +410,7 @@
       state.years = parsed.years;
       if (parsed.filter) state.filter = parsed.filter; else resetFilter();
       state.maxBinary = validMaxBinary(parsed.maxBinary);
+      state.maxBinaryCredits = validMaxBinaryCredits(parsed.maxBinaryCredits);
       render();
       showToast("הגיבוי יובא בהצלחה");
     };
@@ -1039,12 +1052,14 @@
   function yearStats(year) { return computeStats(year ? year.semesters.flatMap(s => s.courses) : []); }
   function cumulativeStats() { return computeStats(allCourses()); }
 
-  // Simulates marking up to state.maxBinary eligible numeric courses as binary
-  // (pass/fail) and returns the set that would raise the cumulative GPA the most.
-  // Every combination is checked, because picking the best single course again
-  // and again can miss the best pair (two mid-grade, high-credit courses can beat
-  // the lowest grade plus the next-best one). ~40 courses choose 3 is ~10,000
-  // sets, so this is instant. Returns null if no set would help.
+  // Simulates marking eligible numeric courses as binary (pass/fail), within the
+  // university's limits — at most state.maxBinary courses and, if set, at most
+  // state.maxBinaryCredits credits in total — and returns the set that would raise
+  // the cumulative GPA the most. Every combination is checked, because picking the
+  // best single course again and again can miss the best pair (two mid-grade,
+  // high-credit courses can beat the lowest grade plus the next-best one).
+  // Courses are all-or-nothing: a course can't be split to fit the credit limit.
+  // Returns null if no set would help.
   function recommendBinarySwap() {
     const cumulative = cumulativeStats();
     if (cumulative.gpa === null) return null;
@@ -1058,26 +1073,42 @@
       candidates.push({ course, points: result.grade * credits, credits });
     });
 
+    const creditLimit = state.maxBinaryCredits === "" ? Infinity : state.maxBinaryCredits;
+    // Fewest credits first: once a course doesn't fit the credit limit, none after it will
+    candidates.sort((a, b) => a.credits - b.credits);
+
+    // This runs on every grade keystroke and 40 courses choose up to 5 is ~760,000
+    // sets, so one shared `picked` array is reused (push/pop) and each set's points
+    // and credits are carried along instead of re-added — each set costs O(1).
+    const picked = [];
     let best = null;
     // Adds one more course to `picked`, only from courses after the last one
     // picked, so each set is tried exactly once
-    function extend(picked, start) {
+    function extend(points, credits, start) {
       for (let i = start; i < candidates.length; i++) {
-        const set = picked.concat(candidates[i]);
-        const removedPoints = set.reduce((sum, c) => sum + c.points, 0);
-        const removedCredits = set.reduce((sum, c) => sum + c.credits, 0);
-        const newGpaCredits = cumulative.gpaCredits - removedCredits;
+        const c = candidates[i];
+        const setCredits = credits + c.credits;
+        if (setCredits > creditLimit + 1e-9) break; // tiny margin for decimal credits like 0.1
+        const setPoints = points + c.points;
+        picked.push(c);
+        const newGpaCredits = cumulative.gpaCredits - setCredits;
         if (newGpaCredits > 0) {
-          const newGpa = (cumulative.weightedSum - removedPoints) / newGpaCredits;
+          const newGpa = (cumulative.weightedSum - setPoints) / newGpaCredits;
           const delta = newGpa - cumulative.gpa;
           if (delta > 0.005 && (!best || delta > best.delta)) {
-            best = { courses: set.map(c => c.course), delta, newGpa, currentGpa: cumulative.gpa };
+            best = { courses: picked.map(x => x.course), credits: setCredits, delta, newGpa, currentGpa: cumulative.gpa };
           }
         }
-        if (set.length < state.maxBinary) extend(set, i + 1);
+        if (picked.length < state.maxBinary) extend(setPoints, setCredits, i + 1);
+        picked.pop();
       }
     }
-    extend([], 0);
+    extend(0, 0, 0);
+    // List the courses in transcript order, not in the credits order used above
+    if (best) {
+      const order = allCourses();
+      best.courses.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    }
     return best;
   }
 
@@ -1168,39 +1199,60 @@
   }
 
   /* ---------- Binary recommendation ---------- */
+  // The university's pass/fail limits. Rebuilt only by render() (never per
+  // keystroke), so the credit-limit input keeps focus while the user types in it.
+  function renderBinaryLimits() {
+    const el = document.getElementById("binary-limits");
+    if (allCourses().length === 0) {
+      el.innerHTML = "";
+      return;
+    }
+    const options = [1, 2, 3, 4, 5].map(n =>
+      `<option value="${n}"${n === state.maxBinary ? " selected" : ""}>${n}</option>`).join("");
+    el.innerHTML = `
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted mb-2">
+        <span class="font-semibold whitespace-nowrap">מגבלת עובר בינארי:</span>
+        <label class="flex items-center gap-2 whitespace-nowrap">
+          עד
+          <select data-field="max-binary" class="bg-panel2 border border-line rounded-lg px-2 py-1 font-mono text-ink2 focus:outline-none focus:border-accent">${options}</select>
+          קורסים
+        </label>
+        <label class="flex items-center gap-2 whitespace-nowrap">
+          עד
+          <input type="number" inputmode="decimal" min="0" step="0.5" data-field="max-binary-credits" value="${state.maxBinaryCredits}" placeholder="ללא"
+            class="w-16 bg-panel2 border border-line rounded-lg px-2 py-1 font-mono text-ink2 text-center placeholder:text-muted/60 focus:outline-none focus:border-accent">
+          נק&quot;ז
+        </label>
+      </div>`;
+  }
+
   function renderRecommendation() {
-    const el = document.getElementById("recommendation");
+    const el = document.getElementById("recommendation-tip");
     const best = recommendBinarySwap();
     if (!best) {
       el.innerHTML = "";
       return;
     }
-    const { courses, currentGpa, newGpa, delta } = best;
+    const { courses, credits, currentGpa, newGpa, delta } = best;
     const names = courses.map(course => {
       const { year, semester } = locateCourse(course.id);
       const where = year && semester ? `${esc(semester.name)} · ${esc(year.name)}` : "";
       return `<span class="font-semibold">"${esc(course.name)}"</span>${where ? ` (${where})` : ""}`;
     }).join(", ");
-    const options = [1, 2, 3].map(n =>
-      `<option value="${n}"${n === state.maxBinary ? " selected" : ""}>${n}</option>`).join("");
     el.innerHTML = `
       <div class="flex flex-wrap items-center justify-between gap-3 bg-accentBg border border-accent/30 rounded-xl px-4 py-3">
         <p class="text-sm text-ink2">
           <span class="text-accent font-semibold">טיפ:</span>
-          ${courses.length === 1 ? "סימון הקורס" : "סימון הקורסים"} ${names} כעובר בינארי צפוי להעלות את הממוצע המצטבר
+          ${courses.length === 1 ? "סימון הקורס" : "סימון הקורסים"} ${names}
+          <span class="text-muted">(<span class="font-mono">${Number(credits.toFixed(2))}</span> נק&quot;ז)</span>
+          כעובר בינארי צפוי להעלות את הממוצע המצטבר
           מ-<span class="font-mono text-accent">${fmt(currentGpa, 2)}</span>
           ל-<span class="font-mono text-accent">${fmt(newGpa, 2)}</span>
           <span class="font-mono text-accent">(+${fmt(delta, 2)})</span>
         </p>
-        <div class="flex flex-wrap items-center gap-3">
-          <label class="flex items-center gap-2 text-xs text-muted whitespace-nowrap">
-            כמה קורסים מותר לסמן?
-            <select data-field="max-binary" class="bg-panel2 border border-line rounded-lg px-2 py-1 font-mono text-ink2 focus:outline-none focus:border-accent">${options}</select>
-          </label>
-          <button data-action="apply-recommendation" data-course-ids="${courses.map(c => c.id).join(",")}" class="shrink-0 text-xs font-semibold bg-accent text-[#07231d] rounded-lg px-3 py-1.5 hover:opacity-90 transition-opacity">
-            סמן כעובר בינארי
-          </button>
-        </div>
+        <button data-action="apply-recommendation" data-course-ids="${courses.map(c => c.id).join(",")}" class="shrink-0 text-xs font-semibold bg-accent text-[#07231d] rounded-lg px-3 py-1.5 hover:opacity-90 transition-opacity">
+          סמן כעובר בינארי
+        </button>
       </div>`;
   }
 
@@ -1444,6 +1496,7 @@
   function render() {
     persistState();
     renderDashboard();
+    renderBinaryLimits();
     renderRecommendation();
     renderFilterBar();
     renderYearsRoot();
@@ -1653,12 +1706,17 @@
       updateComputedOnly();
       return;
     }
+    if (field === "max-binary-credits") {
+      state.maxBinaryCredits = clampNumber(e.target.value, 0, 999);
+      updateComputedOnly();
+      return;
+    }
   });
 
   // Values are clamped while typing (a grade of 150 is stored as 100), but the
   // input kept showing what was typed. When the user leaves the field, show the
   // stored value instead, so the screen never disagrees with the calculation.
-  const NUMBER_LIMITS = { "course-credits": [0, 999], "course-bonus": [-100, 100], "component-weight": [0, 100], "component-grade": [0, 100] };
+  const NUMBER_LIMITS = { "course-credits": [0, 999], "course-bonus": [-100, 100], "component-weight": [0, 100], "component-grade": [0, 100], "max-binary-credits": [0, 999] };
   document.addEventListener("change", function (e) {
     const field = e.target.getAttribute && e.target.getAttribute("data-field");
     const limits = NUMBER_LIMITS[field];
