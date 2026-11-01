@@ -35,7 +35,7 @@ So I built a tool for my own Ben-Gurion University transcript that I could also 
 
 ## What it does
 
-- **Pass/fail recommendation engine**: simulates *"what if I marked this course pass/fail?"* for every course and suggests the single swap that raises the cumulative GPA the most, with one-click apply
+- **Pass/fail recommendation engine**: the student picks how many courses they may mark pass/fail (1–3); the app checks **every combination** of up to that many courses and suggests the one that raises the cumulative GPA the most, with one-click apply. (Picking the best course one at a time can miss the best pair, so it doesn't.)
 - **Import grades from a screenshot**: upload screenshots of the BGU app's grades screen; course names, grades and credits are read **on the device** (no upload) and shown in a review table before anything is saved
 - **Year → Semester → Course → Component** hierarchy, with semester, annual and cumulative GPA
 - **Full Magen logic**: automatic drop-and-redistribute when a protective grade doesn't beat the final exam
@@ -111,7 +111,6 @@ I built GradeWise with an **AI-assisted workflow, using Claude as the implementa
 
 - Screenshot import is tuned to the **BGU app's grades screen**; other universities' layouts aren't supported yet.
 - Data lives per browser, per device. There's no cross-device sync (by design, to avoid accounts).
-- The recommendation suggests one pass/fail course at a time, not a multi-course optimization.
 - Next: import support for other universities' grade screens, and an automated test suite for the OCR pipeline with fictional screenshots.
 
 ## Run locally

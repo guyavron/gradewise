@@ -122,7 +122,8 @@
 
   const state = {
     years: [],
-    filter: { mode: "all", yearId: null, semesterId: null } // mode: all | year | semester
+    filter: { mode: "all", yearId: null, semesterId: null }, // mode: all | year | semester
+    maxBinary: 1 // how many courses the student may mark pass/fail (1–3), used by the recommendation
   };
 
   const STORAGE_KEY = "gradewise-state-v1";
@@ -131,7 +132,7 @@
   // Each browser/device has its own independent copy; nothing is shared or synced.
   function persistState() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ years: state.years, filter: state.filter }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ years: state.years, filter: state.filter, maxBinary: state.maxBinary }));
     } catch (e) {
       // Storage unavailable (private browsing, quota, etc.) — fail silently, app still works in-memory
     }
@@ -145,10 +146,16 @@
       if (!parsed || !Array.isArray(parsed.years)) return false;
       state.years = parsed.years;
       if (parsed.filter) state.filter = parsed.filter;
+      state.maxBinary = validMaxBinary(parsed.maxBinary);
       return state.years.length > 0;
     } catch (e) {
       return false;
     }
+  }
+
+  // Older saves and backups have no maxBinary — fall back to 1
+  function validMaxBinary(value) {
+    return [1, 2, 3].includes(value) ? value : 1;
   }
 
   function uid() {
@@ -290,17 +297,20 @@
     if (!confirm("לאפס את כל הנתונים? הפעולה אינה הפיכה.")) return;
     state.years = [];
     resetFilter();
+    state.maxBinary = 1;
     persistState();
     render();
     showToast("כל הנתונים אופסו");
   }
 
-  function applyRecommendation(courseId) {
-    const { course } = locateCourse(courseId);
-    if (!course) return;
-    course.isBinary = true;
+  function applyRecommendation(courseIds) {
+    const courses = courseIds.map(id => locateCourse(id).course).filter(Boolean);
+    if (courses.length === 0) return;
+    courses.forEach(course => { course.isBinary = true; });
     render();
-    showToast(`"${course.name}" סומן כעובר בינארי`);
+    showToast(courses.length === 1
+      ? `"${courses[0].name}" סומן כעובר בינארי`
+      : `${courses.length} קורסים סומנו כעובר בינארי`);
   }
 
   // Demo data — lets a first-time visitor (or a recruiter) see every feature
@@ -357,7 +367,7 @@
   // browser storage isn't guaranteed to survive indefinitely (e.g. iOS is known
   // to evict site storage more aggressively than desktop browsers).
   function exportBackup() {
-    const payload = { years: state.years, filter: state.filter, exportedAt: new Date().toISOString() };
+    const payload = { years: state.years, filter: state.filter, maxBinary: state.maxBinary, exportedAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -387,6 +397,7 @@
       if (!confirm("ייבוא הגיבוי יחליף את כל הנתונים הנוכחיים. להמשיך?")) return;
       state.years = parsed.years;
       if (parsed.filter) state.filter = parsed.filter; else resetFilter();
+      state.maxBinary = validMaxBinary(parsed.maxBinary);
       render();
       showToast("הגיבוי יובא בהצלחה");
     };
@@ -1028,28 +1039,45 @@
   function yearStats(year) { return computeStats(year ? year.semesters.flatMap(s => s.courses) : []); }
   function cumulativeStats() { return computeStats(allCourses()); }
 
-  // Simulates marking each eligible numeric course as binary (pass/fail) one at a
-  // time, and returns the single swap that would raise the cumulative GPA the most
-  // — i.e. the course dragging the overall average down hardest relative to its
-  // credit weight. Returns null if no course, or no swap, would help.
+  // Simulates marking up to state.maxBinary eligible numeric courses as binary
+  // (pass/fail) and returns the set that would raise the cumulative GPA the most.
+  // Every combination is checked, because picking the best single course again
+  // and again can miss the best pair (two mid-grade, high-credit courses can beat
+  // the lowest grade plus the next-best one). ~40 courses choose 3 is ~10,000
+  // sets, so this is instant. Returns null if no set would help.
   function recommendBinarySwap() {
     const cumulative = cumulativeStats();
     if (cumulative.gpa === null) return null;
-    let best = null;
+    const candidates = [];
     allCourses().forEach(course => {
       if (course.isBinary) return;
       const result = computeCourseGrade(course);
       if (!result.valid || result.grade === null) return;
       const credits = num(course.credits);
       if (credits <= 0) return;
-      const newGpaCredits = cumulative.gpaCredits - credits;
-      if (newGpaCredits <= 0) return;
-      const newGpa = (cumulative.weightedSum - result.grade * credits) / newGpaCredits;
-      const delta = newGpa - cumulative.gpa;
-      if (delta > 0.005 && (!best || delta > best.delta)) {
-        best = { course, delta, newGpa, currentGpa: cumulative.gpa };
-      }
+      candidates.push({ course, points: result.grade * credits, credits });
     });
+
+    let best = null;
+    // Adds one more course to `picked`, only from courses after the last one
+    // picked, so each set is tried exactly once
+    function extend(picked, start) {
+      for (let i = start; i < candidates.length; i++) {
+        const set = picked.concat(candidates[i]);
+        const removedPoints = set.reduce((sum, c) => sum + c.points, 0);
+        const removedCredits = set.reduce((sum, c) => sum + c.credits, 0);
+        const newGpaCredits = cumulative.gpaCredits - removedCredits;
+        if (newGpaCredits > 0) {
+          const newGpa = (cumulative.weightedSum - removedPoints) / newGpaCredits;
+          const delta = newGpa - cumulative.gpa;
+          if (delta > 0.005 && (!best || delta > best.delta)) {
+            best = { courses: set.map(c => c.course), delta, newGpa, currentGpa: cumulative.gpa };
+          }
+        }
+        if (set.length < state.maxBinary) extend(set, i + 1);
+      }
+    }
+    extend([], 0);
     return best;
   }
 
@@ -1147,21 +1175,32 @@
       el.innerHTML = "";
       return;
     }
-    const { course, currentGpa, newGpa, delta } = best;
-    const { year, semester } = locateCourse(course.id);
-    const where = year && semester ? `${esc(semester.name)} · ${esc(year.name)}` : "";
+    const { courses, currentGpa, newGpa, delta } = best;
+    const names = courses.map(course => {
+      const { year, semester } = locateCourse(course.id);
+      const where = year && semester ? `${esc(semester.name)} · ${esc(year.name)}` : "";
+      return `<span class="font-semibold">"${esc(course.name)}"</span>${where ? ` (${where})` : ""}`;
+    }).join(", ");
+    const options = [1, 2, 3].map(n =>
+      `<option value="${n}"${n === state.maxBinary ? " selected" : ""}>${n}</option>`).join("");
     el.innerHTML = `
       <div class="flex flex-wrap items-center justify-between gap-3 bg-accentBg border border-accent/30 rounded-xl px-4 py-3">
         <p class="text-sm text-ink2">
           <span class="text-accent font-semibold">טיפ:</span>
-          סימון הקורס <span class="font-semibold">"${esc(course.name)}"</span>${where ? ` (${where})` : ""} כעובר בינארי צפוי להעלות את הממוצע המצטבר
+          ${courses.length === 1 ? "סימון הקורס" : "סימון הקורסים"} ${names} כעובר בינארי צפוי להעלות את הממוצע המצטבר
           מ-<span class="font-mono text-accent">${fmt(currentGpa, 2)}</span>
           ל-<span class="font-mono text-accent">${fmt(newGpa, 2)}</span>
           <span class="font-mono text-accent">(+${fmt(delta, 2)})</span>
         </p>
-        <button data-action="apply-recommendation" data-course-id="${course.id}" class="shrink-0 text-xs font-semibold bg-accent text-[#07231d] rounded-lg px-3 py-1.5 hover:opacity-90 transition-opacity">
-          סמן כעובר בינארי
-        </button>
+        <div class="flex flex-wrap items-center gap-3">
+          <label class="flex items-center gap-2 text-xs text-muted whitespace-nowrap">
+            כמה קורסים מותר לסמן?
+            <select data-field="max-binary" class="bg-panel2 border border-line rounded-lg px-2 py-1 font-mono text-ink2 focus:outline-none focus:border-accent">${options}</select>
+          </label>
+          <button data-action="apply-recommendation" data-course-ids="${courses.map(c => c.id).join(",")}" class="shrink-0 text-xs font-semibold bg-accent text-[#07231d] rounded-lg px-3 py-1.5 hover:opacity-90 transition-opacity">
+            סמן כעובר בינארי
+          </button>
+        </div>
       </div>`;
   }
 
@@ -1546,7 +1585,7 @@
       case "add-component": addComponent(courseId, type); break;
       case "delete-component": deleteComponent(courseId, componentId); break;
       case "reset-all": resetAll(); break;
-      case "apply-recommendation": applyRecommendation(courseId); break;
+      case "apply-recommendation": applyRecommendation(btn.getAttribute("data-course-ids").split(",")); break;
       case "load-demo": loadDemoData(); break;
       case "import-screenshot": document.getElementById("screenshot-input").click(); break;
       case "import-confirm": confirmScreenshotImport(); break;
@@ -1647,6 +1686,11 @@
       const { course } = locateCourse(courseId);
       const comp = course && course.components.find(c => c.id === componentId);
       if (comp) comp.isMagen = e.target.checked;
+      render();
+      return;
+    }
+    if (field === "max-binary") {
+      state.maxBinary = validMaxBinary(Number(e.target.value));
       render();
       return;
     }
