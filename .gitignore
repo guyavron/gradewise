@@ -4,3 +4,6 @@ test-shots/
 # Private write-ups, kept locally (not part of the public repo).
 case-study.md
 PORTFOLIO-SUMMARY.md
+
+# Local Claude Code settings (preview config), not part of the app
+.claude/

@@ -1059,10 +1059,14 @@
   // best single course again and again can miss the best pair (two mid-grade,
   // high-credit courses can beat the lowest grade plus the next-best one).
   // Courses are all-or-nothing: a course can't be split to fit the credit limit.
+  // Courses the student already marked count toward the limits (see chosenBinaryUsage).
   // Returns null if no set would help.
   function recommendBinarySwap() {
     const cumulative = cumulativeStats();
     if (cumulative.gpa === null) return null;
+    const used = chosenBinaryUsage();
+    const coursesLeft = state.maxBinary - used.count;
+    if (coursesLeft <= 0) return null;
     const candidates = [];
     allCourses().forEach(course => {
       if (course.isBinary) return;
@@ -1073,13 +1077,12 @@
       candidates.push({ course, points: result.grade * credits, credits });
     });
 
-    const creditLimit = state.maxBinaryCredits === "" ? Infinity : state.maxBinaryCredits;
+    const creditLimit = state.maxBinaryCredits === "" ? Infinity : state.maxBinaryCredits - used.credits;
     // Fewest credits first: once a course doesn't fit the credit limit, none after it will
     candidates.sort((a, b) => a.credits - b.credits);
 
-    // This runs on every grade keystroke and 40 courses choose up to 5 is ~760,000
-    // sets, so one shared `picked` array is reused (push/pop) and each set's points
-    // and credits are carried along instead of re-added — each set costs O(1).
+    // This runs on every keystroke and can mean hundreds of thousands of sets, so
+    // each set's total is built from the previous one instead of re-adding it from scratch.
     const picked = [];
     let best = null;
     // Adds one more course to `picked`, only from courses after the last one
@@ -1099,7 +1102,7 @@
             best = { courses: picked.map(x => x.course), credits: setCredits, delta, newGpa, currentGpa: cumulative.gpa };
           }
         }
-        if (picked.length < state.maxBinary) extend(setPoints, setCredits, i + 1);
+        if (picked.length < coursesLeft) extend(setPoints, setCredits, i + 1);
         picked.pop();
       }
     }
@@ -1110,6 +1113,22 @@
       best.courses.sort((a, b) => order.indexOf(a) - order.indexOf(b));
     }
     return best;
+  }
+
+  // Pass/fail courses the student chose (they have a numeric grade) use up the
+  // university's quota. Courses that are pass/fail by nature have no grade, so
+  // they don't count. Without this, marking the recommended courses would make
+  // the app suggest more courses than the limit allows.
+  function chosenBinaryUsage() {
+    let count = 0, credits = 0;
+    allCourses().forEach(course => {
+      if (!course.isBinary) return;
+      const result = computeCourseGrade({ ...course, isBinary: false });
+      if (result.status !== "numeric") return;
+      count++;
+      credits += num(course.credits);
+    });
+    return { count, credits };
   }
 
   /* ============================================================
@@ -1209,6 +1228,10 @@
     }
     const options = [1, 2, 3, 4, 5].map(n =>
       `<option value="${n}"${n === state.maxBinary ? " selected" : ""}>${n}</option>`).join("");
+    const used = chosenBinaryUsage();
+    const usedNote = used.count > 0
+      ? `<span class="whitespace-nowrap">(כבר סומנו: ${used.count === 1 ? "קורס אחד" : `${used.count} קורסים`} ·<span class="font-mono">${Number(used.credits.toFixed(2))}</span> נק&quot;ז)</span>`
+      : "";
     el.innerHTML = `
       <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted mb-2">
         <span class="font-semibold whitespace-nowrap">מגבלת עובר בינארי:</span>
@@ -1223,6 +1246,7 @@
             class="w-16 bg-panel2 border border-line rounded-lg px-2 py-1 font-mono text-ink2 text-center placeholder:text-muted/60 focus:outline-none focus:border-accent">
           נק&quot;ז
         </label>
+        ${usedNote}
       </div>`;
   }
 

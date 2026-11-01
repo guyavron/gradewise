@@ -35,7 +35,7 @@ So I built a tool for my own Ben-Gurion University transcript that I could also 
 
 ## What it does
 
-- **Pass/fail recommendation engine**: the student enters their university's pass/fail limits (e.g. *"up to 3 courses, up to 18 credits"*); the app checks **every combination** of courses that fits both limits and suggests the one that raises the cumulative GPA the most, with one-click apply. (Picking the best course one at a time can miss the best pair, so it doesn't.)
+- **Pass/fail recommendation engine**: the student enters their university's pass/fail limits (e.g. *"up to 3 courses, up to 18 credits"*); the app checks **every combination** of courses that fits both limits and suggests the one that raises the cumulative GPA the most, with one-click apply. Courses the student already marked count toward the limits. (Picking the best course one at a time can miss the best pair, so it doesn't.)
 - **Import grades from a screenshot**: upload screenshots of the BGU app's grades screen; course names, grades and credits are read **on the device** (no upload) and shown in a review table before anything is saved
 - **Year → Semester → Course → Component** hierarchy, with semester, annual and cumulative GPA
 - **Full Magen logic**: automatic drop-and-redistribute when a protective grade doesn't beat the final exam
@@ -47,7 +47,7 @@ So I built a tool for my own Ben-Gurion University transcript that I could also 
 
 ## Architecture
 
-The whole app is **one static HTML file** (~1,700 lines, no build step), deployed on GitHub Pages. The OCR engine is loaded **only when the import button is first used**.
+The whole app is **one static HTML file** (~1,800 lines, no build step), deployed on GitHub Pages. The OCR engine is loaded **only when the import button is first used**.
 
 ```mermaid
 flowchart LR
