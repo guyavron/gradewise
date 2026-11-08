@@ -3,7 +3,8 @@
 <p align="center">
   <b>A GPA calculator built for how Israeli universities actually grade:</b><br/>
   credit-weighted averages, protective ("Magen") exams, pass/fail courses —<br/>
-  and grades imported straight from a screenshot, with OCR that runs on your phone.
+  and grades imported straight from a screenshot, with OCR that runs on your phone.<br/>
+  <sub>Built August 2026</sub>
 </p>
 
 <p align="center">
@@ -67,12 +68,10 @@ flowchart LR
 | Decision | Why |
 |---|---|
 | **No framework, single file** | The UI is bounded and the goal was a link anyone can open. One static file deploys anywhere, with no build pipeline to maintain. |
-| **Two render paths** instead of one | A full re-render on every keystroke destroyed the input being typed in (see Challenges). Structural changes rebuild; live typing only patches computed values. |
 | **`localStorage` instead of accounts** | Accounts need a backend, which GitHub Pages can't host. Per-browser storage gives every friend private data on the same public URL, with no login. |
 | **OCR in the browser (Tesseract.js) instead of an AI model on a server** | Free, no backend, and grades never leave the phone. A server-side vision model would be more accurate, but needs an API key behind a public endpoint (abuse, cost) and means sending people's grades to a third party. |
-| **Find the layout by color first, then OCR each field** | Running OCR on the whole screenshot produced silent errors in credits (`770.00` instead of `0.00`). Locating the blue grade box and orange credits box by pixel color, then reading each one separately with a digits-only whitelist, is far more reliable. |
+| **Find each box by its color, then read it** | Reading the whole screenshot at once produced wrong credits without any warning. The app first finds the blue grade box and the orange credits box, then reads each number on its own. |
 | **Flag instead of guess** | Every number is read 5 times with different preprocessing and accepted only if at least two reads agree. Otherwise the field is highlighted for the user. A wrong grade that looks right is worse than an empty one. |
-| **Lazy-load the OCR engine** | Tesseract plus the Hebrew and English models is ~7 MB. Loading it only on first use keeps the app instant for everyone who never imports. |
 
 ## Challenges & how I solved them
 
@@ -81,15 +80,10 @@ flowchart LR
 - *Diagnosis:* Safari and Chrome shrink images slightly differently. So the phone gave the OCR a slightly different picture than my computer did, and a thin "8" looked like a "3". The Hebrew language model was also bad at reading digits.
 - *Fix:* read numbers from the **full-size** image, do the resizing inside the app itself so every browser gets exactly the same picture, read digits with a separate **English-only** model, and read each number **5 times** with different contrast settings, keeping it only if the reads agree. Re-tested on 4 real screenshots at several phone screen sizes (~300 numbers): **0 wrong values**.
 
-**2. The input that kept losing focus**
-- *Symptom:* while typing a grade, the cursor sometimes jumped out of the field and the next keystroke disappeared.
-- *Diagnosis:* every keystroke triggered a full DOM rebuild, so the input element being typed in was destroyed and recreated.
-- *Fix:* split rendering into `render()` (structural) and `updateComputedOnly()` (patches only computed values). The same rule now applies to the OCR review table.
-
-**3. Data disappearing on phones**
-- *Symptom:* friends had to re-enter all their courses on every visit.
-- *Diagnosis:* a normal refresh kept the data, which ruled out a save bug. Mobile browsers (and especially in-app browsers opened from a chat link) evict or wipe site storage.
-- *Fix:* several layers, since no single one is enough: save again whenever the app is closed or switched away from, ask the browser not to delete the site's data, a manual backup file, a warning inside in-app browsers, and screenshot import, so re-entering a semester takes seconds instead of minutes.
+**2. Data disappearing on phones**
+- *What happened:* friends had to re-enter all their courses on every visit.
+- *Why:* phones, and especially browsers opened from a WhatsApp or Instagram link, sometimes wipe a site's saved data.
+- *Fix:* no single fix was enough, so there are several: saving more often, a warning inside those in-app browsers, a backup file, and screenshot import, so re-entering a semester takes seconds.
 
 ## Results
 
@@ -105,7 +99,7 @@ I built GradeWise with an **AI-assisted workflow, using Claude as the implementa
 - **Defined the domain rules** (the averaging formula, the Magen comparison, weight validation) and approved a written plan before any code
 - **Made the product decisions**: on-device OCR over a paid AI API, flag-instead-of-guess, which courses to skip on import, the design direction
 - **Tested on real devices with real data**: the iPhone test is what exposed the 88→38 bug that local tests missed
-- **Kept a living `CLAUDE.md`**: a line-numbered map of every function, updated after each structural change, so later edits go straight to the right code
+- **Kept a project guide for Claude (`CLAUDE.md`)**: the rules, the current state and where everything is, updated after every change, so each new session started from where the last one ended.
 
 ## Limitations & next steps
 
